@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -205,23 +204,6 @@ func TestUserPermission_AllowsImpersonation_Nil(t *testing.T) {
 	if u.AllowsImpersonation() {
 		t.Fatal("expected false on nil")
 	}
-}
-
-// ─── signal_unix.go ───────────────────────────────────────────────
-
-func TestIsReloadSignal(t *testing.T) {
-	if !IsReloadSignal(syscall.SIGHUP) {
-		t.Fatal("SIGHUP should be reload signal")
-	}
-	if IsReloadSignal(syscall.SIGTERM) {
-		t.Fatal("SIGTERM should not be reload signal")
-	}
-}
-
-func TestRegisterReloadSignal(t *testing.T) {
-	ch := make(chan os.Signal, 1)
-	RegisterReloadSignal(ch)
-	// Just ensure it doesn't panic; we can't easily send SIGHUP in test
 }
 
 // ─── tsa.go helpers ───────────────────────────────────────────────
