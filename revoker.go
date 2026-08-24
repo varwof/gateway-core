@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jijie Wei (varwof)
+// SPDX-License-Identifier: Apache-2.0
+
 // Revoker — revokes client certificates via the varwof-core API
 //
 // Automatically revokes short-lived certificates when connections close,

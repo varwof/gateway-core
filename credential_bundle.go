@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jijie Wei (varwof)
+// SPDX-License-Identifier: Apache-2.0
+
 // Credential Bundle — Patent P1-B-27 / P1-B-29 / P2-A-01
 //
 // A credential bundle consists of three parts:

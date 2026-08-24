@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jijie Wei (varwof)
+// SPDX-License-Identifier: Apache-2.0
+
 // TaskRegistry — task lifecycle tracking (spec L75 revocation triggers a/b/c/d/e
 // active reporting path, A3/A4/A5)
 //

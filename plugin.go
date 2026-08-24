@@ -17,8 +17,8 @@ type PluginDecision = pki.PluginDecision
 
 // PluginAllow/Deny/Bypass are plugin decision constants.
 const (
-	PluginAllow PluginDecision = pki.PluginAllow
-	PluginDeny  PluginDecision = pki.PluginDeny
+	PluginAllow  PluginDecision = pki.PluginAllow
+	PluginDeny   PluginDecision = pki.PluginDeny
 	PluginBypass PluginDecision = pki.PluginBypass
 )
 

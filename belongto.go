@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jijie Wei (varwof)
+// SPDX-License-Identifier: Apache-2.0
+
 // G4 dual-certificate belong-to strong binding (SPKI strong binding).
 //
 // Dual-certificate deployment (08-dual-cert.md): the handshake certificate is presented

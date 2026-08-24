@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jijie Wei (varwof)
+// SPDX-License-Identifier: Apache-2.0
+
 // Delegation chain hardening — specification P1-B-14/15/16/17
 //
 //   - Anti-cycle (P1-B-14): certificate serial number deduplication within chain, reject on duplicate (cycle/reuse detection);

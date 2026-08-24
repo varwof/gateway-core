@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jijie Wei (varwof)
+// SPDX-License-Identifier: Apache-2.0
+
 // Three-layer trust model — spec P2-A-02
 //
 //	Layer 1 Identity verification (Agent Cert + CA Chain)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jijie Wei (varwof)
+// SPDX-License-Identifier: Apache-2.0
+
 // Parameter-level boundary validation — patent spec P1-B-11 / P2-B-05
 //
 // Each schemeId defines its own parameter boundary comparison logic (e.g., max_rows).

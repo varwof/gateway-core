@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jijie Wei (varwof)
+// SPDX-License-Identifier: Apache-2.0
+
 // confirmed_renewal.go — Confirmed renewal flow (patent spec P2-A-12/17, P1-B-12)
 //
 // Renewal is no longer automatically re-signed by the gateway; instead it enters a

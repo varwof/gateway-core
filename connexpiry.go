@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jijie Wei (varwof)
+// SPDX-License-Identifier: Apache-2.0
+
 // ConnExpiryRegistry — Certificate serial number → active connection/renewal status registry
 //
 // Corresponds to specification P2-A-14/15/16 and Example 4 (P2-D-04):
