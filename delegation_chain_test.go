@@ -22,8 +22,12 @@ func makeChainCert(t *testing.T, cn string) (*x509.Certificate, *ecdsa.PrivateKe
 	if err != nil {
 		t.Fatal(err)
 	}
+	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	if err != nil {
+		t.Fatal(err)
+	}
 	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano() % 1e9),
+		SerialNumber: serial,
 		Subject:      pkixName(cn),
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(24 * time.Hour),
