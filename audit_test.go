@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -153,9 +154,15 @@ func TestAuditLogConcurrent(t *testing.T) {
 	}
 	defer logger.Close()
 
+	var wg sync.WaitGroup
 	for range 50 {
-		go logger.Log(AuditEntry{Action: "connected", SrcIP: "10.0.0.1", Mapping: "m1"})
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			logger.Log(AuditEntry{Action: "connected", SrcIP: "10.0.0.1", Mapping: "m1"})
+		}()
 	}
+	wg.Wait()
 }
 
 func TestAuditDuration(t *testing.T) {
