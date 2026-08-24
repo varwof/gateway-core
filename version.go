@@ -1,0 +1,5 @@
+// Package gw provides the shared gateway core library for the varwof project.
+package gw
+
+// Version is the package version, set via -ldflags -X github.com/varwof/gateway-core.Version=x.y.z.
+var Version = "0.1.0"
