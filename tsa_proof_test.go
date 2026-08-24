@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -79,9 +80,9 @@ func TestTSAProofLoggerStartStop(t *testing.T) {
 	chain.Seal([][]byte{[]byte("entry1")}, "")
 
 	tsa := NewTSAClient("http://tsa.test.local")
-	signCount := 0
+	var signCount atomic.Int64
 	tsa.SignFunc = func(data []byte) ([]byte, error) {
-		signCount++
+		signCount.Add(1)
 		return []byte("mock-tst"), nil
 	}
 
@@ -98,8 +99,8 @@ func TestTSAProofLoggerStartStop(t *testing.T) {
 	close(stopCh)
 	time.Sleep(200 * time.Millisecond)
 
-	if signCount < 2 {
-		t.Fatalf("expected at least 2 signs (initial + >=1 tick), got %d", signCount)
+	if signCount.Load() < 2 {
+		t.Fatalf("expected at least 2 signs (initial + >=1 tick), got %d", signCount.Load())
 	}
 }
 
