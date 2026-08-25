@@ -2,6 +2,8 @@
 
 > Shared security engine library — unified mTLS, CRL, OCSP, TSA, RBAC, audit, metrics, and decision capabilities for gateway-tcp/http/udp.
 
+> ⚠️ **Preview** — Not for production use. APIs and features may change before official release.
+
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Go Reference](https://pkg.go.dev/badge/github.com/varwof/gateway-core)](https://pkg.go.dev/github.com/varwof/gateway-core)
 
