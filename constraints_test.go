@@ -107,13 +107,18 @@ func TestConstraintRegistry_Reset(t *testing.T) {
 
 func TestResetConstraints_Builtin(t *testing.T) {
 	ResetConstraints()
-	for _, id := range []string{ConstraintCIDRKey, ConstraintTimeWindowKey, ConstraintConcurrentKey, ConstraintGeoFenceKey} {
+	for _, id := range []string{
+		ConstraintCIDRKey, ConstraintTimeWindowKey, ConstraintConcurrentKey,
+		ConstraintHardTimeoutKey, ConstraintIdleTimeoutKey,
+		ConstraintReadOnlyKey, ConstraintAuditRequiredKey,
+		ConstraintGeoFenceKey,
+	} {
 		if _, err := globalConstraintRegistry.Find(id); err != nil {
 			t.Fatalf("builtin %q missing after ResetConstraints: %v", id, err)
 		}
 	}
-	if globalConstraintRegistry.Len() != 4 {
-		t.Fatalf("Len() = %d, want 4", globalConstraintRegistry.Len())
+	if globalConstraintRegistry.Len() != 8 {
+		t.Fatalf("Len() = %d, want 8", globalConstraintRegistry.Len())
 	}
 }
 
@@ -331,7 +336,12 @@ func TestCheckAuthorizationConstraints_UnknownIgnored(t *testing.T) {
 
 func TestIsKnownConstraintType(t *testing.T) {
 	ResetConstraints()
-	for _, id := range []string{ConstraintCIDRKey, ConstraintTimeWindowKey, ConstraintConcurrentKey, ConstraintGeoFenceKey} {
+	for _, id := range []string{
+		ConstraintCIDRKey, ConstraintTimeWindowKey, ConstraintConcurrentKey,
+		ConstraintHardTimeoutKey, ConstraintIdleTimeoutKey,
+		ConstraintReadOnlyKey, ConstraintAuditRequiredKey,
+		ConstraintGeoFenceKey,
+	} {
 		if !isKnownConstraintType(id) {
 			t.Fatalf("%q should be known", id)
 		}

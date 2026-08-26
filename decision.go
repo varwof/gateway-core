@@ -36,7 +36,6 @@ type AdmissionResult struct {
 	Decision               DecisionResult
 	Reason                 string
 	AIC                    *AIC
-	GatewaySession         *GatewaySessionExtension
 	PrincipalAuthorization *PrincipalAuthorization
 	PrincipalUid           string
 	// EffectiveCaps is the P∩C (AIC declarations ∩ PA grants) intersection result,
@@ -51,8 +50,6 @@ type AdmissionResult struct {
 type AdmissionConfig struct {
 	// RequireAIC when set to true rejects connections without AIC extension.
 	RequireAIC bool
-	// RequireGatewaySession when set to true rejects connections without GS extension.
-	RequireGatewaySession bool
 	// RequiredProtocol requires the Agent to have the specified protocol capability (empty = no check).
 	RequiredProtocol string
 	// RequiredRuleId requires the Agent to have the specified CapabilityId permission (empty = no check).
@@ -144,20 +141,32 @@ func (c AdmissionConfig) Validate() error {
 }
 
 // ConstraintCIDRKey is the capabilityId for IP network range constraint.
-const ConstraintCIDRKey = "allowed-cidr"
+const ConstraintCIDRKey = "network:cidr"
 
 // ConstraintConcurrentKey is the capabilityId for max concurrent connections constraint.
-const ConstraintConcurrentKey = "max-concurrent"
+const ConstraintConcurrentKey = "session:max-concurrent"
 
 // ConstraintTimeWindowKey is the capabilityId for time window constraint.
-const ConstraintTimeWindowKey = "time-window"
+const ConstraintTimeWindowKey = "time:window"
+
+// ConstraintHardTimeoutKey is the capabilityId for session hard timeout constraint.
+const ConstraintHardTimeoutKey = "session:hard-timeout"
+
+// ConstraintIdleTimeoutKey is the capabilityId for session idle timeout constraint.
+const ConstraintIdleTimeoutKey = "session:idle-timeout"
+
+// ConstraintReadOnlyKey is the capabilityId for read-only operation constraint.
+const ConstraintReadOnlyKey = "op:readonly"
+
+// ConstraintAuditRequiredKey is the capabilityId for audit-required operation constraint.
+const ConstraintAuditRequiredKey = "op:audit:required"
 
 // ConstraintGeoFenceKey is the capabilityId for geo fence constraint.
 const ConstraintGeoFenceKey = "geo-fence"
 
 // CheckAuthorizationConstraints performs offline validation of authorizationConstraints.
-// Currently supports: allowed-cidr (requires ClientIP), time-window, geo-fence (requires ClientIP).
-// max-concurrent is checked by the gateway via the connection tracker; this function skips it.
+// Supports: network:cidr (requires ClientIP), time:window, geo-fence (requires ClientIP),
+// session:max-concurrent, session:hard-timeout, session:idle-timeout, op:readonly, op:audit:required.
 // Unknown constraint types are ignored by default (forward compatible); the caller logs audit warnings;
 // after registering a custom constraint executor (RegisterConstraint), it will be recognized and executed.
 func CheckAuthorizationConstraints(constraints []Capability, clientIP string) error {
@@ -360,15 +369,6 @@ func CheckAdmission(cert *x509.Certificate, cfg AdmissionConfig) AdmissionResult
 			}
 		}
 	}
-	// Parse GatewaySession
-	gs, err := ParseGatewaySessionExtension(cert)
-	if err != nil {
-		return AdmissionResult{Decision: DecisionDeny, Reason: fmt.Sprintf("gateway session parse: %v", err)}
-	}
-	if gs == nil && cfg.RequireGatewaySession {
-		return AdmissionResult{Decision: DecisionDeny, Reason: "gateway session extension required"}
-	}
-	result.GatewaySession = gs
 
 	// Parse PrincipalAuthorization (must be done before constraint checks, for parameter boundary validation).
 	// Independent of AIC: human certificates without AIC can also carry PA directly (direct authorization scenario),
@@ -864,14 +864,11 @@ func HasDelegatedAgentOU(cert *x509.Certificate) bool {
 }
 
 // CheckDelegatedAgentCert validates the legitimacy of a Delegated-Agent certificate (for non-HTTP protocols like TCP).
-// Checks whether the certificate contains a Delegated-Agent OU and has a valid GatewaySession hardTimeout configured.
+// Checks whether the certificate contains a Delegated-Agent OU.
 // Returns empty string on success, non-empty rejection reason on failure.
-func CheckDelegatedAgentCert(cert *x509.Certificate, gs *GatewaySessionExtension) string {
+func CheckDelegatedAgentCert(cert *x509.Certificate) string {
 	if !hasDelegatedAgentOU(cert) {
 		return ""
-	}
-	if gs == nil || gs.HardTimeout <= 0 {
-		return "Delegated-Agent requires GatewaySession with hardTimeout"
 	}
 	return ""
 }
@@ -911,13 +908,13 @@ func CheckDelegatedAgentHeaders(cert *x509.Certificate, r *http.Request) string 
 }
 
 // DelegatedAgentServerIdentity derives the server-asserted delegation identity from the
-// core-signed certificate extension (AIC / GatewaySession), preventing G4 identity spoofing:
+// core-signed certificate extension (AIC), preventing G4 identity spoofing:
 // never trust client-supplied plaintext headers.
 // Returns:
 //   - user: the server-asserted proxied subject (from AIC.PrincipalUid or cert CN/OU fallback)
-//   - expiry: delegation validity deadline (from GS.HardTimeout; zero time.Time{} when no GS)
+//   - expiry: delegation validity deadline (zero time.Time{} when no hard-timeout constraint)
 //   - reason: non-empty rejection reason (illegal conditions other than missing Delegated-Agent OU)
-func DelegatedAgentServerIdentity(cert *x509.Certificate, principal string, gs *GatewaySessionExtension) (user string, expiry time.Time, reason string) {
+func DelegatedAgentServerIdentity(cert *x509.Certificate, principal string) (user string, expiry time.Time, reason string) {
 	if !hasDelegatedAgentOU(cert) {
 		return "", time.Time{}, ""
 	}
@@ -925,12 +922,6 @@ func DelegatedAgentServerIdentity(cert *x509.Certificate, principal string, gs *
 		user = principal
 	} else {
 		user = ouFallbackPrincipal(cert)
-	}
-	if gs != nil && gs.HardTimeoutLimit() > 0 {
-		expiry = time.Now().Add(time.Duration(gs.HardTimeoutLimit()) * time.Second)
-		if time.Now().After(expiry) {
-			return "", time.Time{}, "Delegated-Agent GatewaySession expired"
-		}
 	}
 	return user, expiry, ""
 }

@@ -105,33 +105,6 @@ func TestPipelineCheckLeafOnly(t *testing.T) {
 	}
 }
 
-func TestPipelineGatewaySessionPropagated(t *testing.T) {
-	gs := GatewaySessionExtension{
-		Version:       1,
-		MaxConcurrent: 5,
-		HardTimeout:   3600,
-	}
-	val, err := asn1.Marshal(gs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert := makeCertWithExt(t, oidGateway, val)
-	chain := []*x509.Certificate{cert}
-	r := RunAccessPipeline(chain, &PipelineConfig{})
-	if !r.Granted {
-		t.Fatalf("expected allow: %s", r.DenyReason)
-	}
-	if r.GatewaySession == nil {
-		t.Fatal("expected GatewaySession to be propagated")
-	}
-	if r.GatewaySession.MaxConcurrent != 5 {
-		t.Errorf("MaxConcurrent: expected 5, got %d", r.GatewaySession.MaxConcurrent)
-	}
-	if r.GatewaySession.HardTimeout != 3600 {
-		t.Errorf("HardTimeout: expected 3600, got %d", r.GatewaySession.HardTimeout)
-	}
-}
-
 func TestPipelineWithoutGS(t *testing.T) {
 	cert := &x509.Certificate{
 		Subject:   pkix.Name{CommonName: "no-gs"},
@@ -142,9 +115,6 @@ func TestPipelineWithoutGS(t *testing.T) {
 	r := RunAccessPipeline(chain, &PipelineConfig{})
 	if !r.Granted {
 		t.Fatalf("expected allow: %s", r.DenyReason)
-	}
-	if r.GatewaySession != nil {
-		t.Fatal("expected GatewaySession to be nil without GS extension")
 	}
 }
 
@@ -493,58 +463,6 @@ func TestPipelineDisallowRepresentative(t *testing.T) {
 	}
 }
 
-func TestPipelineExecutionConstraint_CIDRAllowed(t *testing.T) {
-	cert := makeCertWithGS(t, &GatewaySessionExtension{
-		AllowedCIDRs:  []string{"10.0.0.0/8", "192.168.1.0/24"},
-		MaxConcurrent: 5,
-		HardTimeout:   3600,
-		MaxRetries:    3,
-	})
-
-	chain := []*x509.Certificate{cert}
-	r := RunAccessPipeline(chain, &PipelineConfig{
-		ClientIP: "10.1.2.3",
-	})
-	if !r.Granted {
-		t.Fatalf("expected allow for allowed IP: %s", r.DenyReason)
-	}
-	if r.SessionConstraint.MaxConcurrent != 5 {
-		t.Fatalf("expected MaxConcurrent=5, got %d", r.SessionConstraint.MaxConcurrent)
-	}
-	if r.SessionConstraint.HardTimeout != 3600 {
-		t.Fatalf("expected HardTimeout=3600, got %d", r.SessionConstraint.HardTimeout)
-	}
-	if r.SessionConstraint.MaxRetries != 3 {
-		t.Fatalf("expected MaxRetries=3, got %d", r.SessionConstraint.MaxRetries)
-	}
-}
-
-func TestPipelineExecutionConstraint_CIDRDenied(t *testing.T) {
-	cert := makeCertWithGS(t, &GatewaySessionExtension{
-		AllowedCIDRs: []string{"10.0.0.0/8"},
-	})
-
-	chain := []*x509.Certificate{cert}
-	r := RunAccessPipeline(chain, &PipelineConfig{
-		ClientIP: "192.168.1.1",
-	})
-	if r.Granted {
-		t.Fatal("expected deny for IP outside allowed CIDRs")
-	}
-}
-
-func TestPipelineExecutionConstraint_CIDRMissingClientIP(t *testing.T) {
-	cert := makeCertWithGS(t, &GatewaySessionExtension{
-		AllowedCIDRs: []string{"10.0.0.0/8"},
-	})
-
-	chain := []*x509.Certificate{cert}
-	r := RunAccessPipeline(chain, &PipelineConfig{})
-	if r.Granted {
-		t.Fatal("expected deny when ClientIP is empty")
-	}
-}
-
 // TestPipelineAuthorizationConstraintsEnforced verifies authorizationConstraints
 // (G1: three-gateway wiring of EnforceConstraints/StrictConstraints) are enforced
 // in RunAccessPipeline: CIDR out-of-range denied, time-window outside denied,
@@ -787,33 +705,6 @@ func TestPipelineCredentialBundleUserAuth(t *testing.T) {
 			t.Fatal("no bundle/resolver: agent==user self-verify should deny")
 		}
 	})
-}
-
-func makeCertWithGS(t *testing.T, gs *GatewaySessionExtension) *x509.Certificate {
-	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gsVal, err := asn1.Marshal(*gs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "gs-test"},
-		NotBefore:    time.Now().Add(-1 * time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		ExtraExtensions: []pkix.Extension{
-			{Id: oidGateway, Value: gsVal},
-		},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert, _ := x509.ParseCertificate(der)
-	return cert
 }
 
 func TestTwoStageCapabilityRouting(t *testing.T) {

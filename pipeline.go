@@ -32,8 +32,6 @@ type PipelineConfig struct {
 	MaxConnsPerCert int
 	// RequireAIC requires the client to hold an AIC certificate.
 	RequireAIC bool
-	// RequireGS requires GatewaySession constraints.
-	RequireGS bool
 	// RequireSPIFFE requires the client certificate to carry a SPIFFE ID
 	// SAN URI. When set, connections without a SPIFFE ID are rejected.
 	RequireSPIFFE bool
@@ -79,7 +77,7 @@ type PipelineConfig struct {
 	AuditLogger *AuditLogger
 	// NonceCache is the anti-replay nonce cache.
 	NonceCache *NonceCache
-	// ClientIP is used for GatewaySession AllowedCIDRs check (v1.4 ExecutionConstraint).
+	// ClientIP is the client IP address for authorization constraint checks.
 	ClientIP string
 	// UserCert is the authorized user's certificate, used for DelegationAuthorization
 	// signature verification.
@@ -126,14 +124,6 @@ type PipelineConfig struct {
 	HTTPFacts *HTTPFacts
 }
 
-// SessionConstraint contains execution constraints parsed from GatewaySession (v1.4 ExecutionConstraint).
-// Populated by RunAccessPipeline for gateway runtime enforcement.
-type SessionConstraint struct {
-	MaxConcurrent int
-	HardTimeout   int
-	MaxRetries    int
-}
-
 // PipelineResult is the admission pipeline execution result.
 type PipelineResult struct {
 	Granted    bool
@@ -144,9 +134,7 @@ type PipelineResult struct {
 	AgentId    string
 	// SPIFFEID is the SPIFFE ID extracted from the client certificate SAN
 	// URI (empty when the certificate carries no SPIFFE URI).
-	SPIFFEID          string
-	GatewaySession    *GatewaySessionExtension
-	SessionConstraint SessionConstraint
+	SPIFFEID string
 	// AIC is the AIC extension carried by the admitted connection (parsed result). G3 long-lived
 	// connection periodic review requires its AuthorizationConstraints.
 	AIC *AIC
@@ -268,7 +256,6 @@ func RunAccessPipeline(chain []*x509.Certificate, cfg *PipelineConfig) *Pipeline
 
 	admit := CheckAdmission(clientCert, AdmissionConfig{
 		RequireAIC:                cfg.RequireAIC,
-		RequireGatewaySession:     cfg.RequireGS,
 		RequiredProtocol:          cfg.RequiredProtocol,
 		RequiredRuleId:            cfg.RequiredRuleId,
 		RequiredCapabilities:      cfg.RequiredCapabilities,
@@ -319,26 +306,6 @@ func RunAccessPipeline(chain []*x509.Certificate, cfg *PipelineConfig) *Pipeline
 				}
 			}
 		}
-	}
-
-	// v1.4: ExecutionConstraint — GatewaySession AllowedCIDRs check
-	gs := admit.GatewaySession
-	if gs != nil && len(gs.AllowedCIDRs) > 0 {
-		if cfg.ClientIP == "" {
-			return deny("client IP required for GatewaySession AllowedCIDRs check")
-		}
-		if !gs.CIDRAllowed(cfg.ClientIP) {
-			recordRiskViolation(cfg.RiskMonitor, clientCert, "out_of_cidr", "",
-				fmt.Sprintf("client IP %q not allowed", cfg.ClientIP))
-			return deny(fmt.Sprintf("client IP %q not in GatewaySession allowed CIDRs", cfg.ClientIP))
-		}
-	}
-
-	// Build execution constraints for gateway use
-	sc := SessionConstraint{
-		MaxConcurrent: gs.MaxConcurrentLimit(),
-		HardTimeout:   gs.HardTimeoutLimit(),
-		MaxRetries:    gs.MaxRetriesLimit(),
 	}
 
 	// Phase one (connection/declaration layer): P∩C intersection + scheme-aligned plugin
@@ -484,8 +451,6 @@ func RunAccessPipeline(chain []*x509.Certificate, cfg *PipelineConfig) *Pipeline
 		Serial:                 serial,
 		AgentId:                agentId,
 		SPIFFEID:               spiffeID,
-		GatewaySession:         admit.GatewaySession,
-		SessionConstraint:      sc,
 		AIC:                    admit.AIC,
 		PrincipalAuthorization: admit.PrincipalAuthorization,
 	}

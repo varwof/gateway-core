@@ -425,37 +425,6 @@ func TestValidateAICExtension_NonceWrongLength(t *testing.T) {
 	}
 }
 
-func TestValidateKeyDerivation_Nil(t *testing.T) {
-	gs := (*GatewaySessionExtension)(nil)
-	if err := gs.ValidateKeyDerivation(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestValidateKeyDerivation_SaltTooShort(t *testing.T) {
-	gs := &GatewaySessionExtension{
-		KeyDerivation: []KeyDerivationParams{
-			{KDFAlgorithm: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66257, 1, 1, 10, 1}, Salt: make([]byte, 8)},
-		},
-	}
-	err := gs.ValidateKeyDerivation()
-	if err == nil {
-		t.Fatal("expected salt too short error")
-	}
-}
-
-func TestValidateKeyDerivation_SaltValid(t *testing.T) {
-	gs := &GatewaySessionExtension{
-		KeyDerivation: []KeyDerivationParams{
-			{KDFAlgorithm: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66257, 1, 1, 10, 1}, Salt: make([]byte, 16)},
-			{KDFAlgorithm: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66257, 1, 1, 10, 1}, Salt: make([]byte, 32)},
-		},
-	}
-	if err := gs.ValidateKeyDerivation(); err != nil {
-		t.Fatalf("valid salt sizes should not fail: %v", err)
-	}
-}
-
 func TestMatchCapability(t *testing.T) {
 	tests := []struct {
 		id, pattern string

@@ -473,25 +473,21 @@ func TestDelegatedAgentServerIdentityExtra(t *testing.T) {
 
 	// Non-delegated cert -> all zeros.
 	normal, _ := newSignedCert(t, caCert, caKey, "u", nil)
-	if u, _, r := DelegatedAgentServerIdentity(normal, "p", nil); u != "" || r != "" {
+	if u, _, r := DelegatedAgentServerIdentity(normal, "p"); u != "" || r != "" {
 		t.Errorf("non-delegated = %q, %q", u, r)
 	}
-	// No GS -> has user, no expiry.
-	u, exp, r := DelegatedAgentServerIdentity(daCert, "", nil)
+	// DA cert -> has user, no expiry (hard-timeout not yet extracted from constraints).
+	u, exp, r := DelegatedAgentServerIdentity(daCert, "")
 	if u == "" || r != "" {
-		t.Errorf("da no gs = %q, %q", u, r)
+		t.Errorf("da cert = %q, %q", u, r)
 	}
 	if !exp.IsZero() {
-		t.Error("no GS → zero expiry expected")
+		t.Error("zero expiry expected (hard-timeout from constraints not yet wired)")
 	}
-	// Has GS -> derives user and expiry.
-	gs := &GatewaySessionExtension{HardTimeout: 3600}
-	u, exp, r = DelegatedAgentServerIdentity(daCert, "user-x", gs)
+	// DA cert with explicit principal.
+	u, _, r = DelegatedAgentServerIdentity(daCert, "user-x")
 	if u != "user-x" || r != "" {
-		t.Errorf("da with gs = %q, %q", u, r)
-	}
-	if exp.IsZero() || time.Until(exp) > 3700*time.Second {
-		t.Errorf("bad expiry %v", exp)
+		t.Errorf("da with principal = %q, %q", u, r)
 	}
 	_ = pool
 }

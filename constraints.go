@@ -132,6 +132,10 @@ func init() {
 		cidrEvaluator{},
 		timeWindowEvaluator{},
 		maxConcurrentEvaluator{},
+		hardTimeoutEvaluator{},
+		idleTimeoutEvaluator{},
+		readOnlyEvaluator{},
+		auditRequiredEvaluator{},
 		geoFenceEvaluator{},
 	} {
 		_ = globalConstraintRegistry.Register(ev)
@@ -155,6 +159,10 @@ func ResetConstraints() {
 		cidrEvaluator{},
 		timeWindowEvaluator{},
 		maxConcurrentEvaluator{},
+		hardTimeoutEvaluator{},
+		idleTimeoutEvaluator{},
+		readOnlyEvaluator{},
+		auditRequiredEvaluator{},
 		geoFenceEvaluator{},
 	} {
 		_ = globalConstraintRegistry.Register(ev)
@@ -441,6 +449,95 @@ func RegisterGeoResolver(name string, fn GeoResolver) {
 		return
 	}
 	geoResolvers[name] = fn
+}
+
+// HardTimeoutMin is the minimum value for session:hard-timeout (seconds).
+const HardTimeoutMin = 60
+
+// HardTimeoutMax is the maximum value for session:hard-timeout (seconds).
+const HardTimeoutMax = 86400
+
+// hardTimeoutEvaluator implements the session:hard-timeout constraint.
+// Parameters: {"value": N} where N is in range 60..86400 seconds.
+type hardTimeoutEvaluator struct{}
+
+// CapabilityId returns the capability scheme ID for this constraint.
+func (hardTimeoutEvaluator) CapabilityId() string { return ConstraintHardTimeoutKey }
+
+// Evaluate validates hard-timeout parameters. Actual timeout enforcement is performed
+// by the gateway runtime (goroutine timer); this stage validates parameter legality.
+func (hardTimeoutEvaluator) Evaluate(cap *Capability, ctx *ConstraintContext) error {
+	var params struct {
+		Value int `json:"value"`
+	}
+	if err := json.Unmarshal(cap.Parameters, &params); err != nil {
+		return fmt.Errorf("constraint session:hard-timeout: invalid JSON: %w", err)
+	}
+	if params.Value < HardTimeoutMin || params.Value > HardTimeoutMax {
+		return fmt.Errorf("constraint session:hard-timeout: value %d: must be %d-%d", params.Value, HardTimeoutMin, HardTimeoutMax)
+	}
+	return nil
+}
+
+// IdleTimeoutMin is the minimum value for session:idle-timeout (seconds).
+const IdleTimeoutMin = 30
+
+// IdleTimeoutMax is the maximum value for session:idle-timeout (seconds).
+const IdleTimeoutMax = 3600
+
+// idleTimeoutEvaluator implements the session:idle-timeout constraint.
+// Parameters: {"value": N} where N is in range 30..3600 seconds.
+type idleTimeoutEvaluator struct{}
+
+// CapabilityId returns the capability scheme ID for this constraint.
+func (idleTimeoutEvaluator) CapabilityId() string { return ConstraintIdleTimeoutKey }
+
+// Evaluate validates idle-timeout parameters. Actual timeout enforcement is performed
+// by the gateway runtime; this stage validates parameter legality.
+func (idleTimeoutEvaluator) Evaluate(cap *Capability, ctx *ConstraintContext) error {
+	var params struct {
+		Value int `json:"value"`
+	}
+	if err := json.Unmarshal(cap.Parameters, &params); err != nil {
+		return fmt.Errorf("constraint session:idle-timeout: invalid JSON: %w", err)
+	}
+	if params.Value < IdleTimeoutMin || params.Value > IdleTimeoutMax {
+		return fmt.Errorf("constraint session:idle-timeout: value %d: must be %d-%d", params.Value, IdleTimeoutMin, IdleTimeoutMax)
+	}
+	return nil
+}
+
+// readOnlyEvaluator implements the op:readonly constraint.
+// Parameters: {"value": true} restricts to read-only operations.
+type readOnlyEvaluator struct{}
+
+// CapabilityId returns the capability scheme ID for this constraint.
+func (readOnlyEvaluator) CapabilityId() string { return ConstraintReadOnlyKey }
+
+// Evaluate validates op:readonly parameters. Actual enforcement is performed
+// by the gateway runtime (request method filtering); this stage validates parameter legality.
+func (readOnlyEvaluator) Evaluate(cap *Capability, ctx *ConstraintContext) error {
+	var params struct {
+		Value bool `json:"value"`
+	}
+	if err := json.Unmarshal(cap.Parameters, &params); err != nil {
+		return fmt.Errorf("constraint op:readonly: invalid JSON: %w", err)
+	}
+	return nil
+}
+
+// auditRequiredEvaluator implements the op:audit:required constraint.
+// No parameters; asserts that operations must write an audit log.
+type auditRequiredEvaluator struct{}
+
+// CapabilityId returns the capability scheme ID for this constraint.
+func (auditRequiredEvaluator) CapabilityId() string { return ConstraintAuditRequiredKey }
+
+// Evaluate always passes at check time. Actual enforcement is performed
+// by the gateway runtime (audit logger integration); this stage only
+// validates that the constraint is present.
+func (auditRequiredEvaluator) Evaluate(cap *Capability, ctx *ConstraintContext) error {
+	return nil
 }
 
 // ConstraintRecheckLoop periodically re-evaluates authorizationConstraints (G3: constraint timing consistency).

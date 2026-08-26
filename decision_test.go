@@ -68,7 +68,8 @@ func TestCheckAdmission_RequireAIC(t *testing.T) {
 	}
 }
 
-func TestCheckAdmission_RequireGatewaySession(t *testing.T) {
+func TestCheckAdmission_GSExtensionIgnored(t *testing.T) {
+	// GS extension is no longer required; a cert without GS should still be admitted.
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
@@ -79,9 +80,9 @@ func TestCheckAdmission_RequireGatewaySession(t *testing.T) {
 	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	cert, _ := x509.ParseCertificate(der)
 
-	result := CheckAdmission(cert, AdmissionConfig{RequireGatewaySession: true})
-	if result.Decision != DecisionDeny {
-		t.Fatalf("expected Deny when RequireGatewaySession, got %v", result.Decision)
+	result := CheckAdmission(cert, AdmissionConfig{})
+	if result.Decision != DecisionAllow {
+		t.Fatalf("expected Allow (GS no longer required), got %v", result.Decision)
 	}
 }
 
@@ -782,42 +783,22 @@ func TestCheckDelegatedAgentCert_NoAgentOU(t *testing.T) {
 	cert := &x509.Certificate{
 		Subject: pkix.Name{OrganizationalUnit: []string{"admin"}},
 	}
-	if reason := CheckDelegatedAgentCert(cert, nil); reason != "" {
+	if reason := CheckDelegatedAgentCert(cert); reason != "" {
 		t.Fatalf("expected no reason for non-agent cert, got %s", reason)
 	}
 }
 
-func TestCheckDelegatedAgentCert_MissingGS(t *testing.T) {
+func TestCheckDelegatedAgentCert_AgentOU(t *testing.T) {
 	cert := &x509.Certificate{
 		Subject: pkix.Name{OrganizationalUnit: []string{"Delegated-Agent", "admin"}},
 	}
-	if reason := CheckDelegatedAgentCert(cert, nil); reason == "" {
-		t.Fatal("expected rejection for Delegated-Agent without GS")
-	}
-}
-
-func TestCheckDelegatedAgentCert_MissingHardTimeout(t *testing.T) {
-	cert := &x509.Certificate{
-		Subject: pkix.Name{OrganizationalUnit: []string{"Delegated-Agent", "admin"}},
-	}
-	gs := &GatewaySessionExtension{MaxConcurrent: 1}
-	if reason := CheckDelegatedAgentCert(cert, gs); reason == "" {
-		t.Fatal("expected rejection for Delegated-Agent without hardTimeout")
-	}
-}
-
-func TestCheckDelegatedAgentCert_Valid(t *testing.T) {
-	cert := &x509.Certificate{
-		Subject: pkix.Name{OrganizationalUnit: []string{"Delegated-Agent", "admin"}},
-	}
-	gs := &GatewaySessionExtension{HardTimeout: 3600}
-	if reason := CheckDelegatedAgentCert(cert, gs); reason != "" {
-		t.Fatalf("expected no reason for valid Delegated-Agent, got %s", reason)
+	if reason := CheckDelegatedAgentCert(cert); reason != "" {
+		t.Fatalf("expected no reason for Delegated-Agent cert, got %s", reason)
 	}
 }
 
 func TestCheckDelegatedAgentCert_NilCert(t *testing.T) {
-	if reason := CheckDelegatedAgentCert(nil, nil); reason != "" {
+	if reason := CheckDelegatedAgentCert(nil); reason != "" {
 		t.Fatalf("expected no reason for nil cert, got %s", reason)
 	}
 }
@@ -1542,7 +1523,7 @@ func TestDelegatedAgentServerIdentity(t *testing.T) {
 		},
 	}
 	// Principal is the server-asserted identity derived from the signed cert/AIC.
-	user, _, reason := DelegatedAgentServerIdentity(cert, "verified-user@core", nil)
+	user, _, reason := DelegatedAgentServerIdentity(cert, "verified-user@core")
 	if reason != "" {
 		t.Fatalf("unexpected reason: %s", reason)
 	}
@@ -1551,7 +1532,7 @@ func TestDelegatedAgentServerIdentity(t *testing.T) {
 	}
 	// Non-delegated cert yields empty identity (no injection).
 	plain := &x509.Certificate{Subject: pkix.Name{OrganizationalUnit: []string{"admin"}}}
-	if u, _, _ := DelegatedAgentServerIdentity(plain, "x", nil); u != "" {
+	if u, _, _ := DelegatedAgentServerIdentity(plain, "x"); u != "" {
 		t.Fatalf("non-delegated cert must not yield identity, got %q", u)
 	}
 }

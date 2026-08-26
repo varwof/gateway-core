@@ -58,28 +58,15 @@ func (c *IssueConfig) RenewalInterval() time.Duration {
 
 // IssueRequest is a short-lived certificate issuance request.
 type IssueRequest struct {
-	CA             string                `json:"ca"`
-	CN             string                `json:"cn"`
-	SAN            string                `json:"san,omitempty"`
-	Profile        string                `json:"profile,omitempty"`
-	KeyType        string                `json:"key_type,omitempty"`
-	Validity       int                   `json:"validity,omitempty"`
-	GatewaySession *GatewaySessionConfig `json:"gateway_session,omitempty"`
-	AgentType      *int                  `json:"agent_type,omitempty"`
-	AgentId        string                `json:"agent_id,omitempty"`
-	MarketAccessId string                `json:"market_access_id,omitempty"`
-}
-
-// GatewaySessionConfig is the gateway session configuration.
-type GatewaySessionConfig struct {
-	// MaxConcurrent is the maximum number of concurrent sessions.
-	MaxConcurrent int `json:"max_concurrent,omitempty"`
-	// HardTimeout is the session hard timeout duration.
-	HardTimeout int `json:"hard_timeout,omitempty"`
-	// AllowedCIDRs is the list of allowed client CIDRs.
-	AllowedCIDRs []string `json:"allowed_cidrs,omitempty"`
-	// MaxRetries is the maximum number of retries.
-	MaxRetries int `json:"max_retries,omitempty"`
+	CA             string `json:"ca"`
+	CN             string `json:"cn"`
+	SAN            string `json:"san,omitempty"`
+	Profile        string `json:"profile,omitempty"`
+	KeyType        string `json:"key_type,omitempty"`
+	Validity       int    `json:"validity,omitempty"`
+	AgentType      *int   `json:"agent_type,omitempty"`
+	AgentId        string `json:"agent_id,omitempty"`
+	MarketAccessId string `json:"market_access_id,omitempty"`
 }
 
 // IssueResult is the result of a short-lived certificate issuance.

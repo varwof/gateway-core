@@ -55,7 +55,6 @@ type Layer2Result struct {
 	Reason                 string
 	AIC                    *AIC
 	PrincipalAuthorization *PrincipalAuthorization
-	GatewaySession         *GatewaySessionExtension
 	PrincipalUid           string
 }
 
@@ -112,7 +111,6 @@ func VerifyLayer2(chain []*x509.Certificate, cfg *PipelineConfig, roles []string
 	clientCert := chain[0]
 	admit := CheckAdmission(clientCert, AdmissionConfig{
 		RequireAIC:                cfg.RequireAIC,
-		RequireGatewaySession:     cfg.RequireGS,
 		RequiredProtocol:          cfg.RequiredProtocol,
 		RequiredRuleId:            cfg.RequiredRuleId,
 		RequiredCapabilities:      cfg.RequiredCapabilities,
@@ -133,7 +131,6 @@ func VerifyLayer2(chain []*x509.Certificate, cfg *PipelineConfig, roles []string
 	res := &Layer2Result{
 		AIC:                    admit.AIC,
 		PrincipalAuthorization: admit.PrincipalAuthorization,
-		GatewaySession:         admit.GatewaySession,
 		PrincipalUid:           admit.PrincipalUid,
 	}
 	if admit.Decision != DecisionAllow {
@@ -213,27 +210,10 @@ func VerifyTrustLayers(chain []*x509.Certificate, cfg *PipelineConfig) *Pipeline
 	if !l2.Verified {
 		return deny(l2.Reason)
 	}
-	// GatewaySession AllowedCIDRs (session-level constraint, part of representation layer)
-	gs := admit.GatewaySession
-	if gs != nil && len(gs.AllowedCIDRs) > 0 {
-		if cfg.ClientIP == "" {
-			return deny("client IP required for GatewaySession AllowedCIDRs check")
-		}
-		if !gs.CIDRAllowed(cfg.ClientIP) {
-			return deny(fmt.Sprintf("client IP %q not in GatewaySession allowed CIDRs", cfg.ClientIP))
-		}
-	}
 	// L3 online authorization verification
 	l3 := VerifyLayer3(chain, cfg)
 	if !l3.Verified {
 		return deny(l3.Reason)
-	}
-
-	// Build SessionConstraint (for gateway runtime use)
-	sc := SessionConstraint{
-		MaxConcurrent: gs.MaxConcurrentLimit(),
-		HardTimeout:   gs.HardTimeoutLimit(),
-		MaxRetries:    gs.MaxRetriesLimit(),
 	}
 
 	serial := chain[0].SerialNumber.Text(16)
@@ -242,12 +222,10 @@ func VerifyTrustLayers(chain []*x509.Certificate, cfg *PipelineConfig) *Pipeline
 		agentId = admit.AIC.AgentId
 	}
 	return &PipelineResult{
-		Granted:           true,
-		Roles:             l1.Roles,
-		Principal:         admit.PrincipalUid,
-		Serial:            serial,
-		AgentId:           agentId,
-		GatewaySession:    admit.GatewaySession,
-		SessionConstraint: sc,
+		Granted:   true,
+		Roles:     l1.Roles,
+		Principal: admit.PrincipalUid,
+		Serial:    serial,
+		AgentId:   agentId,
 	}
 }

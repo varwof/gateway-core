@@ -23,9 +23,6 @@ type (
 	Reason                  = pki.Reason
 	AIC                     = pki.AIC
 	DelegationAuthTBS       = pki.DelegationAuthTBS
-
-	GatewaySessionExtension = pki.GatewaySessionExtension
-	KeyDerivationParams     = pki.KeyDerivationParams
 )
 
 // DelegationMode values.
@@ -151,7 +148,6 @@ func isKnownExtension(oid asn1.ObjectIdentifier) bool {
 	known := []asn1.ObjectIdentifier{
 		{1, 3, 6, 1, 4, 1, 66257, 1, 1, 1},
 		{1, 3, 6, 1, 4, 1, 66257, 1, 1, 2},
-		{1, 3, 6, 1, 4, 1, 66257, 1, 1, 12},
 		{1, 3, 6, 1, 4, 1, 66257, 1, 2},
 		{1, 3, 6, 1, 4, 1, 66257, 3, 1},
 	}
