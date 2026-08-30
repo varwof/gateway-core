@@ -146,10 +146,8 @@ func matchDoubleStar(id, pattern string) bool {
 // isKnownExtension — local copy of pki-types private helper (tested directly).
 func isKnownExtension(oid asn1.ObjectIdentifier) bool {
 	known := []asn1.ObjectIdentifier{
-		{1, 3, 6, 1, 4, 1, 66257, 1, 1, 1},
-		{1, 3, 6, 1, 4, 1, 66257, 1, 1, 2},
-		{1, 3, 6, 1, 4, 1, 66257, 1, 2},
-		{1, 3, 6, 1, 4, 1, 66257, 3, 1},
+		{1, 3, 6, 1, 4, 1, 66257, 1, 2}, // PrincipalAuthorization
+		{1, 3, 6, 1, 4, 1, 66257, 3, 1}, // MarketAccessId
 	}
 	for _, k := range known {
 		if oid.Equal(k) {

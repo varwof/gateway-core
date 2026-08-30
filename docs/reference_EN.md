@@ -149,9 +149,5 @@ result := gw.RunAccessPipeline(certChain, &gw.PipelineConfig{
 | OID | Name | Purpose |
 |-----|------|------|
 | `1.3.6.1.4.1.66257.1.1` | AIC | Agent Identity Certificate |
-| `1.3.6.1.4.1.66257.1.2` | GatewaySession | Session constraint extension |
-| `1.3.6.1.4.1.66257.1.3` | OfflineRBAC | Offline RBAC extension |
-| `1.3.6.1.4.1.66257.1.4` | PrincipalProfile | Identity profile |
-| `1.3.6.1.4.1.66257.1.5` | UserPermission | User permission (v1.4 compatibility) |
+| `1.3.6.1.4.1.66257.1.2` | PrincipalAuthorization | Principal authorization declaration |
 | `1.3.6.1.4.1.66257.1.6` | RenewalToken | Renewal token |
-| `1.3.6.1.4.1.66257.1.1.11` | SPIFFE | SPIFFE ID extension |

@@ -386,7 +386,7 @@ func TestValidateAICExtension_KnownCriticalExtension(t *testing.T) {
 			RequestedLifetime:  3600,
 		},
 		Extensions: []ExtField{
-			{ExtnID: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66257, 1, 1, 1}, Critical: true, ExtnValue: []byte{0x05, 0x00}},
+			{ExtnID: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66257, 1, 2}, Critical: true, ExtnValue: []byte{0x05, 0x00}},
 		},
 	}
 	err := ValidateAIC(aic)
@@ -396,7 +396,7 @@ func TestValidateAICExtension_KnownCriticalExtension(t *testing.T) {
 }
 
 func TestIsKnownExtension(t *testing.T) {
-	known := asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66257, 1, 1, 1}
+	known := asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66257, 1, 2}
 	if !isKnownExtension(known) {
 		t.Fatal("expected known OID to be recognized")
 	}
