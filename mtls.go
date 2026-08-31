@@ -50,6 +50,13 @@ type TLSConfig struct {
 	// CACertFile is the CA certificate file path (required for mtls mode, used to verify clients).
 	CACertFile string `json:"ca_cert_file,omitempty"`
 
+	// JWTCAFile is an optional CA certificate file for verifying AIC-JWT
+	// bearer tokens (HTTP only). When set, requests without an mTLS client
+	// certificate may authenticate via Authorization: Bearer <AIC-JWT>,
+	// verified against this trust root (same kid convention as the X.509
+	// carrier). Empty disables bearer authentication.
+	JWTCAFile string `json:"jwt_ca_file,omitempty"`
+
 	// CertFile is the server certificate file path (required for server/mtls modes).
 	CertFile string `json:"cert_file,omitempty"`
 
