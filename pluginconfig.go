@@ -62,6 +62,8 @@ func newPluginFromConfig(scheme string, pc *PluginConfig) (CapabilityPlugin, err
 		return newWebhookPlugin(scheme, pc.Config)
 	case "database":
 		return newDatabasePlugin(scheme, pc.Config)
+	case "wallet":
+		return newWalletPlugin(scheme, pc.Config)
 	default:
 		return nil, fmt.Errorf("unknown plugin type %q", pc.Type)
 	}
