@@ -33,8 +33,9 @@ type CredentialBundle struct {
 	// chain[0]=Principal (independently issued, not in the agent chain),
 	// subsequent entries are intermediate CAs (optional).
 	PrincipalChain []*x509.Certificate
-	// CACerts are trust root anchors (both chains anchor to the same trust root).
-	// May be empty (caller provides Roots).
+	// CACerts are optional CA certs carried in the bundle for informational
+	// purposes. They are never used as trust anchors (finding 20): callers must
+	// supply operator-configured roots via VerifyBundle.
 	CACerts []*x509.Certificate
 }
 
@@ -70,18 +71,6 @@ func (b *CredentialBundle) Principal() *x509.Certificate {
 	return b.PrincipalChain[0]
 }
 
-// trustRootPool constructs a trust root pool from CACerts (returns nil if CACerts is empty).
-func (b *CredentialBundle) trustRootPool() *x509.CertPool {
-	if b == nil || len(b.CACerts) == 0 {
-		return nil
-	}
-	pool := x509.NewCertPool()
-	for _, c := range b.CACerts {
-		pool.AddCert(c)
-	}
-	return pool
-}
-
 // VerifyBundle verifies the credential bundle dual chain (P1-B-29):
 //   - Agent chain → trust root (default client authentication EKU);
 //   - Principal chain → same trust root;
@@ -93,11 +82,11 @@ func VerifyBundle(bundle *CredentialBundle, roots *x509.CertPool) error {
 	if bundle == nil {
 		return fmt.Errorf("credential_bundle: nil bundle")
 	}
+	// Finding 20: never trust client-supplied CACerts as trust roots. A
+	// self-signed chain could otherwise self-anchor. Callers must supply
+	// operator-configured roots; missing roots fail closed.
 	if roots == nil {
-		roots = bundle.trustRootPool()
-	}
-	if roots == nil {
-		return fmt.Errorf("credential_bundle: no trust roots provided")
+		return fmt.Errorf("credential_bundle: no trust roots provided (client-supplied CA certs are not trusted)")
 	}
 
 	// Agent chain verification (AIC-containing certificate first, chain[0]=Agent).

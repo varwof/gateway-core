@@ -25,6 +25,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/asn1"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -89,6 +90,11 @@ type RenewalRequest struct {
 	OldSerial string `json:"old_serial,omitempty"`
 	// OldCert is the old certificate (for transition marking, contains NotAfter).
 	OldCert *x509.Certificate `json:"-"`
+	// RequesterKeyHash is the SPKI SHA-256 hash of the authenticated entity that
+	// triggered the renewal request (captured server-side from the management
+	// mTLS peer, not decoded from JSON). Confirm rejects when the confirming
+	// responsible party is the same entity (two-party control, finding 2).
+	RequesterKeyHash string `json:"-"`
 	// Validity is the new certificate validity (days).
 	Validity int `json:"validity,omitempty"`
 	// Profile is the issuance profile.
@@ -127,6 +133,31 @@ type ConfirmedRenewalManager struct {
 	timeout  time.Duration
 	now      func() time.Time
 	onIssued func(newCert *x509.Certificate) // Callback: gateway atomic certificate switch
+
+	// verifyPrincipal, when non-nil, cryptographically validates the responsible
+	// party certificate presented in Confirm (trust-anchor chain, revocation,
+	// custom policy) before the DA signature is accepted. Confirm requires a
+	// verifier when actual issuance is configured (issueCfg != nil) and fails
+	// closed otherwise, so an attacker-supplied self-signed certificate can never
+	// authorize a renewal that produces a new credential.
+	verifyPrincipal func(*x509.Certificate) error
+
+	// verifyOldCert, when non-nil, verifies that the old certificate being
+	// renewed is still valid and not revoked before a renewal is issued
+	// (finding 4). Confirm requires it when issuance is configured and the
+	// request carries an old serial, failing closed otherwise so a just-revoked
+	// credential cannot be renewed into a fresh valid certificate.
+	verifyOldCert func(serial string, oldCert *x509.Certificate) error
+
+	// maxRenewalDAAge is the maximum acceptable age of the responsible party's
+	// re-signed DA timestamp (default 5 minutes, finding 10).
+	maxRenewalDAAge time.Duration
+	// maxRequestedLifetime is the maximum acceptable RequestedLifetime in
+	// seconds for a renewal DA (default 24h, finding 10).
+	maxRequestedLifetime int
+	// renewalNonces, when non-nil, provides one-time-use replay protection for
+	// the renewal DA nonce (finding 10).
+	renewalNonces *memReplayStore
 }
 
 // NewConfirmedRenewalManager creates a confirmed renewal manager.
@@ -138,12 +169,65 @@ type ConfirmedRenewalManager struct {
 //     switch entry point).
 func NewConfirmedRenewalManager(issueCfg *IssueConfig, registry *ConnExpiryRegistry, onIssued func(newCert *x509.Certificate)) *ConfirmedRenewalManager {
 	return &ConfirmedRenewalManager{
-		issueCfg: issueCfg,
-		registry: registry,
-		timeout:  DefaultRenewalConfirmTimeout,
-		now:      time.Now,
-		onIssued: onIssued,
+		issueCfg:             issueCfg,
+		registry:             registry,
+		timeout:              DefaultRenewalConfirmTimeout,
+		now:                  time.Now,
+		onIssued:             onIssued,
+		maxRenewalDAAge:      5 * time.Minute,
+		maxRequestedLifetime: int((24 * time.Hour) / time.Second),
+		renewalNonces:        NewReplayNonceStore(24*time.Hour, 4096),
 	}
+}
+
+// SetRenewalDAFreshness overrides the maximum acceptable age of the renewal DA
+// timestamp (finding 10). Ages older than this are rejected.
+func (m *ConfirmedRenewalManager) SetRenewalDAFreshness(maxAge time.Duration) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxRenewalDAAge = maxAge
+}
+
+// SetRenewalNonceStore replaces the renewal DA replay store (finding 10).
+// Pass nil to disable replay protection (not recommended).
+func (m *ConfirmedRenewalManager) SetRenewalNonceStore(s *memReplayStore) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.renewalNonces = s
+}
+
+// validateRenewalDAFreshness checks the responsible party's re-signed DA for
+// timestamp freshness, bounded requested_lifetime, and one-time-use nonce
+// replay (finding 10).
+func (m *ConfirmedRenewalManager) validateRenewalDAFreshness(conf *RenewalConfirmation) error {
+	da := conf.DA
+	if da.Timestamp.IsZero() {
+		return errors.New("renewal DA timestamp is missing")
+	}
+	age := m.now().Sub(da.Timestamp)
+	if age < 0 || age > m.maxRenewalDAAge {
+		return fmt.Errorf("renewal DA timestamp %s is not within the acceptable freshness window (%s)",
+			da.Timestamp.Format(time.RFC3339), m.maxRenewalDAAge)
+	}
+	if da.RequestedLifetime <= 0 {
+		return errors.New("renewal DA requested_lifetime must be positive")
+	}
+	if da.RequestedLifetime > m.maxRequestedLifetime {
+		return fmt.Errorf("renewal DA requested_lifetime %d exceeds the maximum %d seconds",
+			da.RequestedLifetime, m.maxRequestedLifetime)
+	}
+	if m.renewalNonces != nil {
+		if err := m.renewalNonces.CheckAndAdd(hex.EncodeToString(da.Nonce)); err != nil {
+			return fmt.Errorf("renewal DA nonce replay: %w", err)
+		}
+	}
+	return nil
 }
 
 // SetTimeout overrides the confirmation timeout (for testing).
@@ -154,6 +238,61 @@ func (m *ConfirmedRenewalManager) SetTimeout(d time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.timeout = d
+}
+
+// SetPrincipalCertVerifier installs the responsible-party certificate verifier.
+// The verifier must chain the presented certificate to a trusted identity anchor
+// (and may additionally check revocation/OU policy). It is invoked by Confirm
+// before the renewal DA is accepted. Deployments that issue new certificates
+// must configure one; Confirm fails closed otherwise (finding 1).
+func (m *ConfirmedRenewalManager) SetPrincipalCertVerifier(fn func(*x509.Certificate) error) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.verifyPrincipal = fn
+}
+
+// SetOldCertVerifier installs the old-certificate revocation verifier invoked by
+// Confirm before a renewal is issued. It must confirm the old certificate is
+// still valid/unrevoked; Confirm fails closed when issuance is configured but no
+// verifier is installed (finding 4).
+func (m *ConfirmedRenewalManager) SetOldCertVerifier(fn func(serial string, oldCert *x509.Certificate) error) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.verifyOldCert = fn
+}
+
+// validatePrincipalCert runs the responsible-party certificate checks that the
+// renewal security depends on (finding 1):
+//   - the certificate must be within its validity window (self-contained, always);
+//   - when a verifier is installed, it must accept the certificate;
+//   - when issuance is configured but no verifier is installed, Confirm fails
+//     closed: without a trust anchor the presented certificate is attacker-
+//     controllable, so no new credential may be produced from it.
+func (m *ConfirmedRenewalManager) validatePrincipalCert(cert *x509.Certificate) error {
+	if cert == nil {
+		return errors.New("responsible party certificate is required")
+	}
+	now := m.now()
+	if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
+		return fmt.Errorf("responsible party certificate not currently valid (notBefore=%s, notAfter=%s)",
+			cert.NotBefore.Format(time.RFC3339), cert.NotAfter.Format(time.RFC3339))
+	}
+	if m.verifyPrincipal != nil {
+		if err := m.verifyPrincipal(cert); err != nil {
+			return fmt.Errorf("responsible party certificate verification failed: %w", err)
+		}
+		return nil
+	}
+	if m.issueCfg != nil {
+		return errors.New("responsible party certificate verification is not configured; refusing to issue a renewal certificate on an unverified responsible party certificate")
+	}
+	return nil
 }
 
 // State returns the current renewal state.
@@ -239,10 +378,37 @@ func (m *ConfirmedRenewalManager) Confirm(conf *RenewalConfirmation) (*IssueResu
 		return nil, fmt.Errorf("confirmed_renewal: renewal not awaiting confirmation (state %s)", m.current.state)
 	}
 
+	// 0. Validate the responsible party certificate (trust anchor, expiry) before
+	//    accepting the DA signature or permission grants parsed from it.
+	if err := m.validatePrincipalCert(conf.PrincipalCert); err != nil {
+		m.current.state = RenewalRejected
+		m.current.reason = err.Error()
+		return nil, errors.New(m.current.reason)
+	}
+
+	// 0a. Two-party control (finding 2): the entity that requested the renewal
+	//     must not be the same entity that confirms it. When the requester
+	//     identity was captured, an identical responsible-party key fails closed.
+	if req := m.current.req; req.RequesterKeyHash != "" {
+		if strings.EqualFold(req.RequesterKeyHash, KeyHashHex(conf.PrincipalCert)) {
+			m.current.state = RenewalRejected
+			m.current.reason = "two-party control: the renewal requester cannot confirm its own renewal"
+			return nil, errors.New(m.current.reason)
+		}
+	}
+
 	// 1. Verify DA signature (signed by responsible party's private key, DelegationAuthTBS recomputed)
 	if err := verifyRenewalDA(m.current.req, conf.PrincipalCert, conf.DA); err != nil {
 		m.current.state = RenewalRejected
 		m.current.reason = fmt.Sprintf("da verification failed: %v", err)
+		return nil, errors.New(m.current.reason)
+	}
+
+	// 1a. DA freshness/lifetime/replay (finding 10): a replayed or stale DA, or
+	//     one requesting an unbounded lifetime, must not confirm a renewal.
+	if err := m.validateRenewalDAFreshness(conf); err != nil {
+		m.current.state = RenewalRejected
+		m.current.reason = err.Error()
 		return nil, errors.New(m.current.reason)
 	}
 
@@ -251,6 +417,27 @@ func (m *ConfirmedRenewalManager) Confirm(conf *RenewalConfirmation) (*IssueResu
 		m.current.state = RenewalRejected
 		m.current.reason = err.Error()
 		return nil, errors.New(m.current.reason)
+	}
+
+	// 2a. Old-certificate revocation (finding 4): a just-revoked credential must
+	//     not be "renewed" into a fresh valid certificate. When issuance is
+	//     configured and the request names an old serial, the old certificate
+	//     must be verified unrevoked or the renewal fails closed.
+	if m.issueCfg != nil && m.current.req.OldSerial != "" {
+		if m.verifyOldCert == nil {
+			m.current.state = RenewalRejected
+			m.current.reason = "old certificate revocation verification is not configured; refusing to issue a renewal for an unverified old certificate"
+			return nil, errors.New(m.current.reason)
+		}
+		var oldCert *x509.Certificate
+		if m.registry != nil {
+			oldCert = m.registry.Certificate(m.current.req.OldSerial)
+		}
+		if err := m.verifyOldCert(m.current.req.OldSerial, oldCert); err != nil {
+			m.current.state = RenewalRejected
+			m.current.reason = fmt.Sprintf("old certificate revocation check failed: %v", err)
+			return nil, errors.New(m.current.reason)
+		}
 	}
 
 	// 3. Issue new certificate
@@ -264,11 +451,12 @@ func (m *ConfirmedRenewalManager) Confirm(conf *RenewalConfirmation) (*IssueResu
 		}
 		req := m.current.req
 		issued, err = client.Issue(&IssueRequest{
-			CA:       req.CA,
-			CN:       req.CN,
-			SAN:      req.SAN,
-			Profile:  req.Profile,
-			Validity: req.Validity,
+			CA:        req.CA,
+			CN:        req.CN,
+			SAN:       req.SAN,
+			Profile:   req.Profile,
+			Validity:  req.Validity,
+			OldSerial: req.OldSerial,
 		})
 		if err != nil {
 			m.current.state = RenewalRejected
@@ -358,7 +546,11 @@ func (m *ConfirmedRenewalManager) expireIfTimeout() {
 
 // checkPermissions performs permission recheck (P2-A-17): new capabilities ⊆ responsible party PA grants.
 // When no PA grants are present, checks new capabilities ⊆ old certificate capabilities
-// (preserves existing authorization boundaries).
+// (preserves existing authorization boundaries). If neither bounds the new
+// capabilities and the manager is configured to issue, the recheck fails closed
+// so an attacker cannot mint a renewal certificate with unbounded capabilities
+// (finding 1: the old-certificate fallback is unreachable via the API because
+// RenewalRequest.OldCert is not decoded from JSON).
 func (m *ConfirmedRenewalManager) checkPermissions(conf *RenewalConfirmation) error {
 	req := m.current.req
 	newCaps := req.Capabilities
@@ -384,6 +576,15 @@ func (m *ConfirmedRenewalManager) checkPermissions(conf *RenewalConfirmation) er
 		if oldAIC != nil && !capabilitySubset(newCaps, oldAIC.Capabilities) {
 			return fmt.Errorf("permission recheck: renewal capabilities exceed old certificate capabilities (privileges reduced)")
 		}
+		if oldAIC != nil {
+			return nil
+		}
+	}
+
+	// No bounding authorization available: when the manager actually issues, refuse
+	// rather than grant the requested capabilities unconstrained.
+	if m.issueCfg != nil {
+		return errors.New("permission recheck: renewal capabilities are unconstrained (no principal authorization grants and no old certificate authorization); refusing renewal")
 	}
 	return nil
 }

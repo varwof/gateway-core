@@ -378,11 +378,11 @@ func TestAuditLoggerNonBlockingOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Fill the 2048-deep buffer beyond capacity from a goroutine that never
+	// Fill the 8192-deep buffer beyond capacity from a goroutine that never
 	// drains (we stop the loop immediately), then ensure Log returns fast.
 	done := make(chan struct{})
 	go func() {
-		for i := 0; i < 5000; i++ {
+		for i := 0; i < 50000; i++ {
 			logger.Log(AuditEntry{Action: "x", SrcIP: "1.2.3.4"})
 		}
 		close(done)
@@ -396,6 +396,55 @@ func TestAuditLoggerNonBlockingOverflow(t *testing.T) {
 		t.Error("expected some dropped entries under overflow")
 	}
 	logger.Close()
+}
+
+// TestAuditCriticalNotEvictedByFlood (finding 15): a flood of INFO entries must
+// not evict a security-critical entry.
+func TestAuditCriticalNotEvictedByFlood(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewAuditLogger(filepath.Join(dir, "audit.log"), nil, 10*1024*1024, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	// Overwhelm the queue with routine INFO entries (most will be dropped), then
+	// log a security-critical entry and verify it reaches the file.
+	for i := 0; i < 50000; i++ {
+		logger.Log(AuditEntry{Action: string(ActionProxied), SrcIP: "1.2.3.4"})
+	}
+	logger.Log(AuditEntry{Action: string(ActionRevoked), Level: "WARN", ClientCN: "victim-identity"})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		data, _ := os.ReadFile(filepath.Join(dir, "audit.log"))
+		if strings.Contains(string(data), "victim-identity") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "audit.log"))
+	t.Fatalf("critical audit entry was evicted by a flood (log contains %d bytes)", len(data))
+}
+
+// TestIsAuditCritical classifies WARN/ERROR and revocation/denial actions as
+// critical (finding 15).
+func TestIsAuditCritical(t *testing.T) {
+	if !isAuditCritical(AuditEntry{Level: "WARN"}) {
+		t.Error("WARN must be critical")
+	}
+	if !isAuditCritical(AuditEntry{Level: "ERROR"}) {
+		t.Error("ERROR must be critical")
+	}
+	if !isAuditCritical(AuditEntry{Action: string(ActionRevoked)}) {
+		t.Error("revoked must be critical")
+	}
+	if !isAuditCritical(AuditEntry{Action: string(ActionDenied)}) {
+		t.Error("denied must be critical")
+	}
+	if isAuditCritical(AuditEntry{Action: string(ActionProxied)}) {
+		t.Error("proxied INFO must not be critical")
+	}
 }
 
 // TestAuditLoggerCloseDrains verifies M6: Close flushes buffered entries rather

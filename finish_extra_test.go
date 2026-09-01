@@ -476,13 +476,13 @@ func TestDelegatedAgentServerIdentityExtra(t *testing.T) {
 	if u, _, r := DelegatedAgentServerIdentity(normal, "p"); u != "" || r != "" {
 		t.Errorf("non-delegated = %q, %q", u, r)
 	}
-	// DA cert -> has user, no expiry (hard-timeout not yet extracted from constraints).
+	// DA cert -> has user, expiry bounded by cert NotAfter (finding 17).
 	u, exp, r := DelegatedAgentServerIdentity(daCert, "")
 	if u == "" || r != "" {
 		t.Errorf("da cert = %q, %q", u, r)
 	}
-	if !exp.IsZero() {
-		t.Error("zero expiry expected (hard-timeout from constraints not yet wired)")
+	if exp.IsZero() {
+		t.Error("expiry must be bound to the certificate NotAfter (finding 17)")
 	}
 	// DA cert with explicit principal.
 	u, _, r = DelegatedAgentServerIdentity(daCert, "user-x")

@@ -155,6 +155,26 @@ func TestVerifyBundle_KeyHashMismatch(t *testing.T) {
 	}
 }
 
+// TestVerifyBundle_NoRootsFailsClosed (finding 20): client-supplied CA certs
+// must never self-anchor a bundle; a nil roots argument fails closed.
+func TestVerifyBundle_NoRootsFailsClosed(t *testing.T) {
+	pki := newTestBundlePKI(t)
+	principal := pki.issueLeaf(t, "principal", 10, []pkix.Extension{paExt()})
+	agent := pki.issueLeaf(t, "agent", 20, []pkix.Extension{func() pkix.Extension {
+		aic := bundleAIC(principal, "agent-1")
+		val, _ := asn1.Marshal(aic)
+		return pkix.Extension{Id: oidAIC, Value: val}
+	}()})
+	bundle := &CredentialBundle{
+		AgentChain:     []*x509.Certificate{agent},
+		PrincipalChain: []*x509.Certificate{principal},
+		CACerts:        []*x509.Certificate{pki.root},
+	}
+	if err := VerifyBundle(bundle, nil); err == nil {
+		t.Fatal("nil roots must fail closed, not self-anchor on client CA certs (finding 20)")
+	}
+}
+
 func TestVerifyBundle_DifferentTrustRoots(t *testing.T) {
 	pkiA := newTestBundlePKI(t)
 	pkiB := newTestBundlePKI(t)

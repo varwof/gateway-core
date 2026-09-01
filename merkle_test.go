@@ -19,8 +19,9 @@ func TestMerkleTreeEmpty(t *testing.T) {
 func TestMerkleTreeSingleLeaf(t *testing.T) {
 	leaf := []byte("hello")
 	m := NewMerkleTree([][]byte{leaf})
-	expected := sha256.Sum256([]byte("hello"))
-	if string(m.Root()) != string(expected[:]) {
+	// Finding 22: leaf hashes are domain-separated from node hashes.
+	expected := HashLeaf(leaf)
+	if string(m.Root()) != string(expected) {
 		t.Fatalf("root mismatch for single leaf")
 	}
 }
@@ -208,6 +209,48 @@ func TestAuditChainDump(t *testing.T) {
 	}
 }
 
+// TestAuditChainContinuity (finding 8): a sealed chain whose links are intact
+// verifies, and tampering with a Previous link is detected.
+func TestAuditChainContinuity(t *testing.T) {
+	chain := NewAuditChain(10, nil)
+	prev := ""
+	for i := 0; i < 3; i++ {
+		st, err := chain.SealChecked([][]byte{[]byte("batch")}, prev)
+		if err != nil {
+			t.Fatalf("SealChecked batch %d: %v", i, err)
+		}
+		prev = st.Root
+	}
+	if err := chain.VerifyContinuity(); err != nil {
+		t.Fatalf("intact chain must verify: %v", err)
+	}
+
+	// Break a link: rewrite the middle batch's Previous.
+	chain.mu.Lock()
+	chain.trees[1].Previous = "deadbeef"
+	chain.mu.Unlock()
+	if err := chain.VerifyContinuity(); err == nil {
+		t.Fatal("tampered chain must be detected (finding 8)")
+	}
+}
+
+// TestAuditChainSealCheckedRejectsBrokenLink (finding 8): SealChecked refuses
+// to append a batch whose previous_root does not match the latest root.
+func TestAuditChainSealCheckedRejectsBrokenLink(t *testing.T) {
+	chain := NewAuditChain(10, nil)
+	first, err := chain.SealChecked([][]byte{[]byte("e1")}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = first
+	if _, err := chain.SealChecked([][]byte{[]byte("e2")}, ""); err == nil {
+		t.Fatal("second batch with empty previous_root must be refused")
+	}
+	if _, err := chain.SealChecked([][]byte{[]byte("e2")}, "wrong"); err == nil {
+		t.Fatal("second batch with mismatched previous_root must be refused")
+	}
+}
+
 func TestProofStepJSON(t *testing.T) {
 	sibling := sha256.Sum256([]byte("sibling"))
 	step := ProofStep{Sibling: sibling[:], Left: true}
@@ -234,5 +277,69 @@ func TestRootHex(t *testing.T) {
 	_, err := hex.DecodeString(h)
 	if err != nil {
 		t.Fatalf("invalid hex: %v", err)
+	}
+}
+
+// TestHashDomainSeparation (finding 22): leaf and node hashes use distinct
+// domain prefixes, so a lone-leaf root can never equal an internal node hash.
+func TestHashDomainSeparation(t *testing.T) {
+	leafData := []byte("x")
+	leafHash := HashLeaf(leafData)
+	nodeHash := HashNode(leafHash, leafHash)
+	if string(leafHash) == string(nodeHash) {
+		t.Fatal("leaf and node hashes must be domain-separated (finding 22)")
+	}
+	// Lone-leaf root uses the 0x00 domain; it must not equal a node-domain hash.
+	raw := sha256.Sum256(append([]byte{0x01}, leafData...))
+	if string(leafHash) == string(raw[:]) {
+		t.Fatal("leaf hash must not equal node-domain hash (finding 22)")
+	}
+}
+
+// TestVerifyProofBoundedRejectsOverlongProof (finding 22): proofs longer than
+// the tree height are rejected.
+func TestVerifyProofBoundedRejectsOverlongProof(t *testing.T) {
+	leaves := [][]byte{[]byte("a"), []byte("b"), []byte("c"), []byte("d")}
+	m := NewMerkleTree(leaves)
+	proof, err := m.Proof(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !VerifyProofBounded(leaves[0], proof, m.Root(), len(proof)) {
+		t.Fatal("proof at exactly the height bound should still verify")
+	}
+	over := append([]ProofStep{}, proof...)
+	over = append(over, ProofStep{Sibling: []byte("bogus"), Left: false})
+	if VerifyProofBounded(leaves[0], over, m.Root(), len(proof)) {
+		t.Fatal("over-long proof must be rejected (finding 22)")
+	}
+}
+
+// TestAuditChainVerifyRejectsOverlongProof (finding 22): the chain verifier
+// bounds proof length by the batch height.
+func TestAuditChainVerifyRejectsOverlongProof(t *testing.T) {
+	chain := NewAuditChain(10, nil)
+	st, err := chain.SealChecked([][]byte{[]byte("a"), []byte("b"), []byte("c"), []byte("d")}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st
+	tree := NewMerkleTree([][]byte{[]byte("a"), []byte("b"), []byte("c"), []byte("d")})
+	proof, err := tree.Proof(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err := chain.Verify(0, []byte("a"), proof)
+	if err != nil || !ok {
+		t.Fatalf("valid proof: ok=%v err=%v", ok, err)
+	}
+	over := append([]ProofStep{}, proof...)
+	over = append(over, ProofStep{Sibling: []byte("bogus"), Left: false})
+	ok, err = chain.Verify(0, []byte("a"), over)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Fatal("over-long proof must be rejected by chain verify (finding 22)")
 	}
 }

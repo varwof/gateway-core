@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"errors"
 	"math/big"
 	"testing"
 	"time"
@@ -279,6 +280,309 @@ func TestConfirmedRenewalManager_Reset(t *testing.T) {
 	m.Reset()
 	if m.State() != RenewalIdle {
 		t.Fatalf("state = %s, want idle", m.State())
+	}
+}
+
+// TestConfirmedRenewalManager_ExpiredPrincipalCert (finding 1): an expired
+// responsible-party certificate must never confirm a renewal.
+func TestConfirmedRenewalManager_ExpiredPrincipalCert(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	pubDER, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	expiredCert := &x509.Certificate{
+		SerialNumber:            big.NewInt(7),
+		Subject:                 pkix.Name{CommonName: "principal"},
+		NotBefore:               time.Now().Add(-48 * time.Hour),
+		NotAfter:                time.Now().Add(-24 * time.Hour),
+		RawSubjectPublicKeyInfo: pubDER,
+	}
+
+	req := &RenewalRequest{SessionID: "sess-x", AgentId: "a", CN: "svc"}
+	m := NewConfirmedRenewalManager(nil, nil, nil)
+	if err := m.RequestRenewal(req); err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	da, err := SignRenewalDA(req, key, nonce, time.Now(), 3600, "RENEW", "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Confirm(&RenewalConfirmation{SessionID: "sess-x", DA: da, PrincipalCert: expiredCert}); err == nil {
+		t.Fatal("expected rejection of expired responsible party certificate")
+	}
+	if m.State() != RenewalRejected {
+		t.Fatalf("state = %s, want rejected", m.State())
+	}
+}
+
+// TestConfirmedRenewalManager_VerifyPrincipalRejectsSelfSigned (finding 1): with
+// a trust-anchor verifier installed, a self-signed attacker cert must be rejected
+// even though it signs a valid DA.
+func TestConfirmedRenewalManager_VerifyPrincipalRejectsSelfSigned(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	principalCert := makeEntityCert(t, &key.PublicKey)
+	req := &RenewalRequest{SessionID: "sess-v", AgentId: "a", CN: "svc"}
+	m := NewConfirmedRenewalManager(nil, nil, nil)
+	m.SetPrincipalCertVerifier(func(cert *x509.Certificate) error {
+		return errors.New("not issued by a trusted identity anchor")
+	})
+	if err := m.RequestRenewal(req); err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	da, err := SignRenewalDA(req, key, nonce, time.Now(), 3600, "RENEW", "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Confirm(&RenewalConfirmation{SessionID: "sess-v", DA: da, PrincipalCert: principalCert}); err == nil {
+		t.Fatal("expected rejection when principal cert verifier rejects the certificate")
+	}
+}
+
+// TestConfirmedRenewalManager_NoVerifierFailsClosedOnIssue (finding 1): when the
+// manager is configured to issue new certificates, a missing responsible-party
+// verifier must fail closed instead of issuing on an attacker-supplied cert.
+func TestConfirmedRenewalManager_NoVerifierFailsClosedOnIssue(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	principalCert := makeEntityCert(t, &key.PublicKey)
+	req := &RenewalRequest{SessionID: "sess-i", AgentId: "a", CN: "svc", Capabilities: []Capability{{SchemeId: "tcp", CapabilityId: "tunnel:prod"}}}
+	m := NewConfirmedRenewalManager(&IssueConfig{DefaultCA: "test-ca"}, nil, nil)
+	if err := m.RequestRenewal(req); err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	da, err := SignRenewalDA(req, key, nonce, time.Now(), 3600, "RENEW", "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Confirm(&RenewalConfirmation{SessionID: "sess-i", DA: da, PrincipalCert: principalCert}); err == nil {
+		t.Fatal("expected fail-closed rejection when issuing without a principal cert verifier")
+	}
+}
+
+// TestConfirmedRenewalManager_UnboundedCapsFailClosedOnIssue (finding 1): without
+// PA grants or an old-certificate bound, issuing a renewal must be refused.
+func TestConfirmedRenewalManager_UnboundedCapsFailClosedOnIssue(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	principalCert := makeEntityCert(t, &key.PublicKey)
+	req := &RenewalRequest{SessionID: "sess-u", AgentId: "a", CN: "svc", Capabilities: []Capability{{SchemeId: "database", CapabilityId: "admin"}}}
+	m := NewConfirmedRenewalManager(&IssueConfig{DefaultCA: "test-ca"}, nil, nil)
+	m.SetPrincipalCertVerifier(func(_ *x509.Certificate) error { return nil }) // cert trusted, caps still unbounded
+	if err := m.RequestRenewal(req); err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	da, err := SignRenewalDA(req, key, nonce, time.Now(), 3600, "RENEW", "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Confirm(&RenewalConfirmation{SessionID: "sess-u", DA: da, PrincipalCert: principalCert}); err == nil {
+		t.Fatal("expected rejection for unbounded renewal capabilities")
+	}
+	if m.State() != RenewalRejected {
+		t.Fatalf("state = %s, want rejected", m.State())
+	}
+}
+
+// TestConfirmedRenewalManager_TwoPartyControl (finding 2): the entity that
+// requested a renewal must not be able to confirm it.
+func TestConfirmedRenewalManager_TwoPartyControl(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	principalCert := makeEntityCert(t, &key.PublicKey)
+	req := &RenewalRequest{
+		SessionID:        "sess-2p",
+		AgentId:          "agent-1",
+		PrincipalUid:     "varwof:user@example.com:" + fp(key),
+		CN:               "svc",
+		RequesterKeyHash: KeyHashHex(principalCert), // requester == responsible party
+	}
+	m := NewConfirmedRenewalManager(nil, nil, nil)
+	if err := m.RequestRenewal(req); err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	da, err := SignRenewalDA(req, key, nonce, time.Now(), 3600, "RENEW", "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Confirm(&RenewalConfirmation{SessionID: "sess-2p", DA: da, PrincipalCert: principalCert}); err == nil {
+		t.Fatal("expected two-party-control rejection when requester confirms its own renewal")
+	}
+	if m.State() != RenewalRejected {
+		t.Fatalf("state = %s, want rejected", m.State())
+	}
+
+	// A different responsible party may confirm.
+	key2, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	principalCert2 := makeEntityCert(t, &key2.PublicKey)
+	req2 := &RenewalRequest{
+		SessionID:        "sess-2p2",
+		AgentId:          "agent-1",
+		CN:               "svc",
+		RequesterKeyHash: KeyHashHex(principalCert),
+	}
+	if err := m.RequestRenewal(req2); err != nil {
+		t.Fatal(err)
+	}
+	nonce2 := make([]byte, 32)
+	rand.Read(nonce2)
+	da2, err := SignRenewalDA(req2, key2, nonce2, time.Now(), 3600, "RENEW", "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Confirm(&RenewalConfirmation{SessionID: "sess-2p2", DA: da2, PrincipalCert: principalCert2}); err != nil {
+		t.Fatalf("different responsible party should confirm: %v", err)
+	}
+}
+
+// TestConfirmedRenewalManager_RevokedOldCertFailsClosed (finding 4): a revoked
+// old certificate must not be renewable into a fresh valid cert.
+func TestConfirmedRenewalManager_RevokedOldCertFailsClosed(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	principalCert := makeEntityCert(t, &key.PublicKey)
+	req := &RenewalRequest{
+		SessionID:    "sess-rv",
+		AgentId:      "agent-1",
+		CN:           "svc",
+		OldSerial:    "0A",
+		Capabilities: []Capability{{SchemeId: "tcp", CapabilityId: "tunnel:prod"}},
+	}
+	m := NewConfirmedRenewalManager(&IssueConfig{DefaultCA: "test-ca"}, nil, nil)
+	m.SetPrincipalCertVerifier(func(_ *x509.Certificate) error { return nil })
+	m.SetOldCertVerifier(func(serial string, oldCert *x509.Certificate) error {
+		return errors.New("old certificate 0A is revoked")
+	})
+	if err := m.RequestRenewal(req); err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	da, err := SignRenewalDA(req, key, nonce, time.Now(), 3600, "RENEW", "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Confirm(&RenewalConfirmation{SessionID: "sess-rv", DA: da, PrincipalCert: principalCert}); err == nil {
+		t.Fatal("expected rejection when old certificate is revoked")
+	}
+	if m.State() != RenewalRejected {
+		t.Fatalf("state = %s, want rejected", m.State())
+	}
+}
+
+// TestConfirmedRenewalManager_NoOldCertVerifierFailsClosed (finding 4): issuing
+// a renewal without an old-cert revocation verifier must fail closed.
+func TestConfirmedRenewalManager_NoOldCertVerifierFailsClosed(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	principalCert := makeEntityCert(t, &key.PublicKey)
+	req := &RenewalRequest{
+		SessionID:    "sess-nv",
+		AgentId:      "agent-1",
+		CN:           "svc",
+		OldSerial:    "0B",
+		Capabilities: []Capability{{SchemeId: "tcp", CapabilityId: "tunnel:prod"}},
+	}
+	m := NewConfirmedRenewalManager(&IssueConfig{DefaultCA: "test-ca"}, nil, nil)
+	m.SetPrincipalCertVerifier(func(_ *x509.Certificate) error { return nil })
+	if err := m.RequestRenewal(req); err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	da, err := SignRenewalDA(req, key, nonce, time.Now(), 3600, "RENEW", "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Confirm(&RenewalConfirmation{SessionID: "sess-nv", DA: da, PrincipalCert: principalCert}); err == nil {
+		t.Fatal("expected fail-closed rejection when old-cert verifier is unconfigured")
+	}
+}
+
+// TestConfirmedRenewalManager_StaleDARejected (finding 10): a renewal DA with a
+// stale timestamp must be rejected.
+func TestConfirmedRenewalManager_StaleDARejected(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	principalCert := makeEntityCert(t, &key.PublicKey)
+	req := &RenewalRequest{SessionID: "sess-st", AgentId: "a", CN: "svc"}
+	m := NewConfirmedRenewalManager(nil, nil, nil)
+	if err := m.RequestRenewal(req); err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	da, err := SignRenewalDA(req, key, nonce, time.Now().Add(-time.Hour), 3600, "RENEW", "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Confirm(&RenewalConfirmation{SessionID: "sess-st", DA: da, PrincipalCert: principalCert}); err == nil {
+		t.Fatal("expected rejection of stale renewal DA")
+	}
+	if m.State() != RenewalRejected {
+		t.Fatalf("state = %s, want rejected", m.State())
+	}
+}
+
+// TestConfirmedRenewalManager_ExcessiveLifetimeRejected (finding 10): a renewal
+// DA requesting an unbounded lifetime must be rejected.
+func TestConfirmedRenewalManager_ExcessiveLifetimeRejected(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	principalCert := makeEntityCert(t, &key.PublicKey)
+	req := &RenewalRequest{SessionID: "sess-lt", AgentId: "a", CN: "svc"}
+	m := NewConfirmedRenewalManager(nil, nil, nil)
+	if err := m.RequestRenewal(req); err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	// 30 days — far beyond the 24h default cap.
+	da, err := SignRenewalDA(req, key, nonce, time.Now(), 30*24*3600, "RENEW", "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Confirm(&RenewalConfirmation{SessionID: "sess-lt", DA: da, PrincipalCert: principalCert}); err == nil {
+		t.Fatal("expected rejection of excessive requested lifetime")
+	}
+	if m.State() != RenewalRejected {
+		t.Fatalf("state = %s, want rejected", m.State())
+	}
+}
+
+// TestConfirmedRenewalManager_DANonceReplay (finding 10): a renewal DA nonce
+// must be single-use.
+func TestConfirmedRenewalManager_DANonceReplay(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	principalCert := makeEntityCert(t, &key.PublicKey)
+	req := &RenewalRequest{SessionID: "sess-rp", AgentId: "a", CN: "svc"}
+	m := NewConfirmedRenewalManager(nil, nil, nil)
+	if err := m.RequestRenewal(req); err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	da, err := SignRenewalDA(req, key, nonce, time.Now(), 3600, "RENEW", "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := &RenewalConfirmation{SessionID: "sess-rp", DA: da, PrincipalCert: principalCert}
+	if _, err := m.Confirm(conf); err != nil {
+		t.Fatalf("first confirm should succeed: %v", err)
+	}
+	m.Reset()
+
+	// Replay the exact same DA against a fresh request.
+	req2 := &RenewalRequest{SessionID: "sess-rp2", AgentId: "a", CN: "svc"}
+	if err := m.RequestRenewal(req2); err != nil {
+		t.Fatal(err)
+	}
+	conf2 := &RenewalConfirmation{SessionID: "sess-rp2", DA: da, PrincipalCert: principalCert}
+	if _, err := m.Confirm(conf2); err == nil {
+		t.Fatal("replayed renewal DA nonce must be rejected")
+	}
+	if m.State() != RenewalRejected {
+		t.Fatalf("state = %s, want rejected", m.State())
 	}
 }
 

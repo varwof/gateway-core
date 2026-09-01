@@ -184,8 +184,8 @@ func (cidrEvaluator) CapabilityId() string { return ConstraintCIDRKey }
 
 // Evaluate checks whether the client IP falls within the allowed CIDR ranges.
 func (cidrEvaluator) Evaluate(cap *Capability, ctx *ConstraintContext) error {
-	if ctx == nil || ctx.ClientIP == "" {
-		return nil
+	if ctx == nil {
+		return fmt.Errorf("constraint allowed-cidr: nil context")
 	}
 	cidrs, err := parseCIDRParam(cap.Parameters)
 	if err != nil {
@@ -193,6 +193,12 @@ func (cidrEvaluator) Evaluate(cap *Capability, ctx *ConstraintContext) error {
 	}
 	if len(cidrs) == 0 {
 		return nil
+	}
+	// Finding 18: a configured CIDR restriction with no client IP must fail
+	// closed — otherwise a gateway not populating ClientIP silently bypasses
+	// source-address restrictions.
+	if ctx.ClientIP == "" {
+		return fmt.Errorf("constraint allowed-cidr: client IP unavailable")
 	}
 	parsedIP := net.ParseIP(ctx.ClientIP)
 	if parsedIP == nil {
@@ -369,8 +375,8 @@ func (geoFenceEvaluator) CapabilityId() string { return ConstraintGeoFenceKey }
 
 // Evaluate checks whether the client IP's resolved region identifier hits the allowed set.
 func (geoFenceEvaluator) Evaluate(cap *Capability, ctx *ConstraintContext) error {
-	if ctx == nil || ctx.ClientIP == "" {
-		return nil
+	if ctx == nil {
+		return fmt.Errorf("constraint geo-fence: nil context")
 	}
 	var params struct {
 		Resolver string            `json:"resolver"`
@@ -386,6 +392,10 @@ func (geoFenceEvaluator) Evaluate(cap *Capability, ctx *ConstraintContext) error
 	resolver := params.Resolver
 	if resolver == "" {
 		resolver = "inline"
+	}
+	// Finding 18: a configured geo-fence with no client IP must fail closed.
+	if ctx.ClientIP == "" {
+		return fmt.Errorf("constraint geo-fence: client IP unavailable")
 	}
 	parsedIP := net.ParseIP(ctx.ClientIP)
 	if parsedIP == nil {

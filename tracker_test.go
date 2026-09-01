@@ -81,8 +81,12 @@ func TestTrackerRender(t *testing.T) {
 	tr.Add("AAAA00000001", 0)
 	tr.Add("AAAA00000001", 0)
 	output := tr.Render()
-	if !strings.HasPrefix(output, "cert_AAAA00000001") {
+	// Finding 21: metrics must not expose the raw serial prefix.
+	if !strings.HasPrefix(output, "cert_") {
 		t.Fatalf("unexpected render: %s", output)
+	}
+	if strings.Contains(output, "AAAA00000001") {
+		t.Fatalf("raw serial leaked in render (finding 21): %s", output)
 	}
 }
 

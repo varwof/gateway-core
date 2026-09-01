@@ -96,6 +96,26 @@ func ftsFields(entry *AuditEntry) string {
 	return strings.Join(parts, " ")
 }
 
+// appendWordPosting appends hash to a space-separated postings list, evicting
+// the oldest entries beyond max. Finding 23: by_word postings must not grow
+// without bound on hot terms.
+func appendWordPosting(existing []byte, hash string, max int) []byte {
+	if len(existing) == 0 {
+		return []byte(hash)
+	}
+	words := strings.Fields(string(existing))
+	for _, w := range words {
+		if w == hash {
+			return existing
+		}
+	}
+	words = append(words, hash)
+	if max > 0 && len(words) > max {
+		words = words[len(words)-max:]
+	}
+	return []byte(strings.Join(words, " "))
+}
+
 // indexFTSInTx is the FTS indexing function used internally by Index, reusing an existing transaction.
 func indexFTSInTx(tx *bolt.Tx, hash string, entry *AuditEntry) error {
 	tokens := tokenize(ftsFields(entry))
@@ -108,15 +128,8 @@ func indexFTSInTx(tx *bolt.Tx, hash string, entry *AuditEntry) error {
 	}
 	for _, tok := range tokens {
 		existing := bw.Get([]byte(tok))
-		line := string(existing)
-		if strings.Contains(line, hash) {
-			continue
-		}
-		if len(existing) > 0 {
-			existing = append(existing, ' ')
-		}
-		existing = append(existing, []byte(hash)...)
-		if err := bw.Put([]byte(tok), existing); err != nil {
+		updated := appendWordPosting(existing, hash, MaxPostingsPerKey)
+		if err := bw.Put([]byte(tok), updated); err != nil {
 			return err
 		}
 	}
@@ -143,15 +156,8 @@ func (idx *AuditIndex) IndexFTS(entry *AuditEntry) error {
 		}
 		for _, tok := range tokens {
 			existing := bw.Get([]byte(tok))
-			line := string(existing)
-			if strings.Contains(line, hash) {
-				continue
-			}
-			if len(existing) > 0 {
-				existing = append(existing, ' ')
-			}
-			existing = append(existing, []byte(hash)...)
-			if err := bw.Put([]byte(tok), existing); err != nil {
+			updated := appendWordPosting(existing, hash, MaxPostingsPerKey)
+			if err := bw.Put([]byte(tok), updated); err != nil {
 				return err
 			}
 		}

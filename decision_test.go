@@ -789,17 +789,83 @@ func TestCheckDelegatedAgentCert_NoAgentOU(t *testing.T) {
 }
 
 func TestCheckDelegatedAgentCert_AgentOU(t *testing.T) {
+	// OU alone is not legitimate (finding 17): a Delegated-Agent cert must be
+	// core-signed (carry a valid AIC) and within its validity window.
 	cert := &x509.Certificate{
 		Subject: pkix.Name{OrganizationalUnit: []string{"Delegated-Agent", "admin"}},
 	}
-	if reason := CheckDelegatedAgentCert(cert); reason != "" {
-		t.Fatalf("expected no reason for Delegated-Agent cert, got %s", reason)
+	if reason := CheckDelegatedAgentCert(cert); reason == "" {
+		t.Fatal("expected rejection for Delegated-Agent OU without core-signed AIC (finding 17)")
 	}
 }
 
 func TestCheckDelegatedAgentCert_NilCert(t *testing.T) {
-	if reason := CheckDelegatedAgentCert(nil); reason != "" {
-		t.Fatalf("expected no reason for nil cert, got %s", reason)
+	if reason := CheckDelegatedAgentCert(nil); reason == "" {
+		t.Fatal("expected rejection for nil cert (finding 17)")
+	}
+}
+
+// TestCheckDelegatedAgentCert_ValidDA (finding 17): a core-signed, in-window
+// Delegated-Agent cert passes.
+func TestCheckDelegatedAgentCert_ValidDA(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aic := AIC{
+		AgentId:      "da-agent",
+		PrincipalUid: PrincipalUid{KeyHash: make([]byte, 32), Version: 1, Realm: "varwof", Identifier: "user@varwof.com"},
+		Capabilities: []Capability{{SchemeId: "svc", CapabilityId: "svc:read"}},
+		DelegationAuthorization: DelegationAuthorization{
+			SignatureValue:     []byte{0x01},
+			SignatureAlgorithm: AlgorithmIdentifier{Algorithm: OIDSigECDSAWithSHA256},
+			Timestamp:          time.Now(),
+			Nonce:              make([]byte, 32),
+			RequestedLifetime:  3600,
+			Reason:             Reason{ReasonCode: "TEST", Description: "test"},
+		},
+	}
+	aicDER, _ := asn1.Marshal(aic)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(77),
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		Subject:      pkix.Name{OrganizationalUnit: []string{"Delegated-Agent"}},
+		ExtraExtensions: []pkix.Extension{
+			{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66257, 1, 1}, Value: aicDER},
+		},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason := CheckDelegatedAgentCert(cert); reason != "" {
+		t.Fatalf("valid core-signed DA cert should pass, got %s", reason)
+	}
+}
+
+// TestCheckDelegatedAgentCert_Expired (finding 17): an expired DA cert is rejected.
+func TestCheckDelegatedAgentCert_Expired(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	aic := AIC{AgentId: "da-agent", PrincipalUid: PrincipalUid{KeyHash: make([]byte, 32), Version: 1}}
+	aicDER, _ := asn1.Marshal(aic)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(78),
+		NotBefore:    time.Now().Add(-2 * time.Hour),
+		NotAfter:     time.Now().Add(-time.Hour),
+		Subject:      pkix.Name{OrganizationalUnit: []string{"Delegated-Agent"}},
+		ExtraExtensions: []pkix.Extension{
+			{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66257, 1, 1}, Value: aicDER},
+		},
+	}
+	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	cert, _ := x509.ParseCertificate(der)
+	if reason := CheckDelegatedAgentCert(cert); reason == "" {
+		t.Fatal("expired DA cert must be rejected (finding 17)")
 	}
 }
 
@@ -1286,6 +1352,27 @@ func TestCheckAdmission_CheckDAAge_Disabled(t *testing.T) {
 	}
 }
 
+// TestCheckAdmission_RequireUserAuth_NoKeyHashFailsClosed (finding 16): with
+// RequireUserAuth set and no KeyHash to bind the peer certificate to the
+// principal, an agent must not be able to fill its own user authorization.
+func TestCheckAdmission_RequireUserAuth_NoKeyHashFailsClosed(t *testing.T) {
+	agentCert, userCert := makeCertWithSignedAIC(t, func(aic *AIC) {
+		aic.PrincipalUid.KeyHash = nil
+		aic.DelegationAuthorization.Reason = Reason{ReasonCode: "TEST", Description: "test"}
+	})
+	result := CheckAdmission(agentCert, AdmissionConfig{
+		RequireUserAuth: true,
+		// No UserCert provided and no KeyHash: the agent's own cert must not
+		// be accepted as the user authorization cert.
+	})
+	if result.Decision != DecisionDeny {
+		t.Fatalf("no keyHash self-auth must fail closed, got %v (%s)", result.Decision, result.Reason)
+	}
+	_ = userCert
+}
+
+// TestVerifyDelegationAuth_UnsupportedKeyType verifies an unsupported key type
+// is rejected.
 func TestVerifyDelegationAuth_UnsupportedKeyType(t *testing.T) {
 	cert := &x509.Certificate{Raw: []byte("cert")}
 	// Use Ed25519 as unsupported key type

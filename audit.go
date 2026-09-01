@@ -177,6 +177,9 @@ type AuditLogger struct {
 	stopped    atomic.Bool
 	dropped    atomic.Int64 // count of entries dropped when the buffer was full (M6)
 	tsaTimeout time.Duration
+	// criticalTimeout bounds how long Log waits to enqueue a security-critical
+	// entry before giving up (finding 15). Default 2s.
+	criticalTimeout time.Duration
 }
 
 // NewAuditLogger creates an audit log writer (returns nil if file is empty).
@@ -189,12 +192,13 @@ func NewAuditLogger(file string, tsa *TSAClient, maxSize int64, maxBak int) (*Au
 		return nil, err
 	}
 	l := &AuditLogger{
-		file:       file,
-		w:          w,
-		tsa:        tsa,
-		entries:    make(chan AuditEntry, 2048),
-		done:       make(chan struct{}),
-		tsaTimeout: 5 * time.Second,
+		file:            file,
+		w:               w,
+		tsa:             tsa,
+		entries:         make(chan AuditEntry, 8192),
+		done:            make(chan struct{}),
+		tsaTimeout:      5 * time.Second,
+		criticalTimeout: 2 * time.Second,
 	}
 	go l.loop()
 	return l, nil
@@ -210,15 +214,44 @@ func (l *AuditLogger) Dropped() int64 {
 	return l.dropped.Load()
 }
 
+// isAuditCritical reports whether an entry is security-critical and must never
+// be evicted by a buffer-full flood (finding 15): WARN/ERROR levels and
+// revocation/denial/decision actions.
+func isAuditCritical(entry AuditEntry) bool {
+	if entry.Level == "WARN" || entry.Level == "ERROR" {
+		return true
+	}
+	switch AuditAction(entry.Action) {
+	case ActionDenied, ActionRevoked, ActionPluginDecision, ActionUnknownConstraint:
+		return true
+	}
+	return false
+}
+
 // Log enqueues an audit entry. It never blocks the caller (M6): if the buffer
 // is full the entry is dropped and counted. This prevents a slow audit sink
-// (e.g. TSA) from stalling the data plane.
+// (e.g. TSA) from stalling the data plane. Security-critical entries
+// (WARN/ERROR, revocation/denial actions) are never dropped on the fast path:
+// Log waits up to a bounded timeout for them so an attacker flooding the log
+// cannot evict the evidence of its own activity (finding 15).
 func (l *AuditLogger) Log(entry AuditEntry) {
 	if l == nil || l.stopped.Load() {
 		return
 	}
 	entry.Time = time.Now().UTC().Format(time.RFC3339Nano)
 	defer func() { recover() }()
+	if isAuditCritical(entry) {
+		timer := time.NewTimer(l.criticalTimeout)
+		defer timer.Stop()
+		select {
+		case l.entries <- entry:
+		case <-timer.C:
+			l.dropped.Add(1)
+			fmt.Printf("audit: critical entry dropped after %s (action=%s level=%s)\n",
+				l.criticalTimeout, entry.Action, entry.Level)
+		}
+		return
+	}
 	select {
 	case l.entries <- entry:
 	default:

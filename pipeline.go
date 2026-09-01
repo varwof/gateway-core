@@ -147,10 +147,11 @@ type PipelineResult struct {
 const OfflineLifetimeLimit = time.Hour
 
 // OfflineLifetimeFor returns the enforced offline limit based on the OCSP fallback policy.
-// OCSPFallbackAllow (fail-open) → 1h; others (deny/crl/disabled) → 0 (not enforced).
+// OCSPFallbackAllow (fail-open) and OCSPFallbackCRL (crl data can lag a recent
+// revocation) → 1h cap; deny/disabled → 0 (not enforced; deny is fail-closed).
 // Called by the gateway when constructing PipelineConfig.OfflineMaxCertLifetime.
 func OfflineLifetimeFor(ocspFallback string) time.Duration {
-	if ocspFallback == OCSPFallbackAllow {
+	if ocspFallback == OCSPFallbackAllow || ocspFallback == OCSPFallbackCRL {
 		return OfflineLifetimeLimit
 	}
 	return 0
@@ -169,7 +170,7 @@ func RunAccessPipeline(chain []*x509.Certificate, cfg *PipelineConfig) *Pipeline
 			return deny(err.Error())
 		}
 		if cfg.CRLCache != nil {
-			if revoked, err := cfg.CRLCache.IsRevoked(clientCert.Issuer.String(), clientCert.SerialNumber); err != nil {
+			if revoked, err := cfg.CRLCache.IsRevokedCert(clientCert); err != nil {
 				return deny(fmt.Sprintf("crl check error: %v", err))
 			} else if revoked {
 				return deny("certificate revoked (CRL)")
@@ -187,7 +188,7 @@ func RunAccessPipeline(chain []*x509.Certificate, cfg *PipelineConfig) *Pipeline
 				return deny(err.Error())
 			}
 			if cfg.CRLCache != nil {
-				if revoked, err := cfg.CRLCache.IsRevoked(c.Issuer.String(), c.SerialNumber); err != nil {
+				if revoked, err := cfg.CRLCache.IsRevokedCert(c); err != nil {
 					return deny(fmt.Sprintf("crl check error: %v", err))
 				} else if revoked {
 					return deny("certificate revoked (CRL)")

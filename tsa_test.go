@@ -4,9 +4,15 @@
 package gw
 
 import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
+	"math/big"
 	"testing"
 	"time"
 )
@@ -134,7 +140,7 @@ func TestFindTSACert(t *testing.T) {
 }
 
 func TestExtractTSTInfoFromCMS_Invalid(t *testing.T) {
-	_, _, _, err := extractTSTInfoFromCMS([]byte{0xff})
+	_, _, _, _, err := extractTSTInfoFromCMS([]byte{0xff})
 	if err == nil {
 		t.Fatal("expected error for invalid data")
 	}
@@ -153,4 +159,173 @@ func TestTSAClient_SetMaxTSTAge(t *testing.T) {
 	}
 	var nilC *TSAClient
 	nilC.SetMaxTSTAge(time.Minute) // must not panic
+}
+
+// TestVerifyCMSSignatureSignedAttrs (finding 9): the CMS signature is computed
+// over the RFC 5652 §5.4 SET OF (0x31) encoding of SignedAttributes, not the
+// [0] IMPLICIT (0xA0) wrapper, and the signed message-digest must equal the
+// digest of the eContent.
+func TestVerifyCMSSignatureSignedAttrs(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "tsa"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageTimeStamping},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eContent := []byte("the TSTInfo eContent")
+	eDigest := sha256.Sum256(eContent)
+
+	// Build signedAttrs: contentType = id-ct-TSTInfo, message-digest = sha256(eContent).
+	contentTypeVal, _ := asn1.Marshal(oidTSTInfo)
+	mdVal, _ := asn1.Marshal(eDigest[:])
+	attrs := []cmsAttribute{
+		{Type: oidContentType, Values: []asn1.RawValue{{FullBytes: contentTypeVal}}},
+		{Type: oidMessageDigest, Values: []asn1.RawValue{{FullBytes: mdVal}}},
+	}
+	setOf, err := asn1.MarshalWithParams(attrs, "set")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Signature computed over the SET OF (0x31) form per RFC 5652 §5.4.
+	sig, err := ecdsa.SignASN1(rand.Reader, key, digestForCMS(setOf))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	si := &cmsSignerInfo{
+		DigestAlgorithm: oidSha256,
+		SignatureAlgo:   asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}, // ecdsa-with-SHA256
+		SignedAttrsSet:  setOf,
+		MessageDigest:   eDigest[:],
+		ContentType:     oidTSTInfo,
+		SignatureValue:  sig,
+	}
+	if err := verifyCMSSignature(si, []*x509.Certificate{cert}, eContent); err != nil {
+		t.Fatalf("correct token must verify: %v", err)
+	}
+
+	// Tampered message-digest must be rejected.
+	bad := *si
+	bad.MessageDigest = []byte("tampered-digest")
+	if err := verifyCMSSignature(&bad, []*x509.Certificate{cert}, eContent); err == nil {
+		t.Fatal("tampered message-digest must be rejected")
+	}
+
+	// Wrong contentType must be rejected.
+	bad2 := *si
+	bad2.ContentType = oidSignedData
+	if err := verifyCMSSignature(&bad2, []*x509.Certificate{cert}, eContent); err == nil {
+		t.Fatal("wrong contentType must be rejected")
+	}
+
+	// Signature computed over the [0] IMPLICIT (0xA0) wrapper must be rejected:
+	// this was the pre-fix behavior (finding 9).
+	rawAttr := asn1.RawValue{Class: 2, Tag: 0, IsCompound: true, Bytes: setOf}
+	a0Form, err := asn1.Marshal(rawAttr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sigOverA0, err := ecdsa.SignASN1(rand.Reader, key, digestForCMS(a0Form))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad3 := *si
+	bad3.SignatureValue = sigOverA0
+	if err := verifyCMSSignature(&bad3, []*x509.Certificate{cert}, eContent); err == nil {
+		t.Fatal("signature over [0] wrapper must be rejected (finding 9)")
+	}
+}
+
+// TestParseSignerInfoExtractsAttrs (finding 9): parseSignerInfo must recover
+// the SET OF encoding and the message-digest/contentType attributes.
+func TestParseSignerInfoExtractsAttrs(t *testing.T) {
+	eDigest := sha256.Sum256([]byte("payload"))
+	contentTypeVal, _ := asn1.Marshal(oidTSTInfo)
+	mdVal, _ := asn1.Marshal(eDigest[:])
+	attrs := []cmsAttribute{
+		{Type: oidContentType, Values: []asn1.RawValue{{FullBytes: contentTypeVal}}},
+		{Type: oidMessageDigest, Values: []asn1.RawValue{{FullBytes: mdVal}}},
+	}
+	setOf, err := asn1.MarshalWithParams(attrs, "set")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// SignerInfo: version, sid, digestAlgorithm, signedAttrs [0] IMPLICIT, sigAlgo, sig.
+	si, err := asn1.Marshal(struct {
+		Version     int
+		SID         asn1.RawValue
+		DigestAlgo  asn1.ObjectIdentifier
+		SignedAttrs asn1.RawValue `asn1:"optional,tag:0,class:2,implicit"`
+		SigAlgo     asn1.ObjectIdentifier
+		Signature   []byte
+	}{
+		Version:     1,
+		SID:         asn1.RawValue{FullBytes: mustOID(t, asn1.ObjectIdentifier{1, 2, 3})},
+		DigestAlgo:  oidSha256,
+		SignedAttrs: asn1.RawValue{FullBytes: a0Implicit(setOf)},
+		SigAlgo:     asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2},
+		Signature:   []byte{0x00},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Strip the outer SEQUENCE header: parseSignerInfo expects the inner content.
+	var outer asn1.RawValue
+	if _, err := asn1.Unmarshal(si, &outer); err != nil {
+		t.Fatal(err)
+	}
+	if outer.Tag != asn1.TagSequence {
+		t.Fatalf("expected SEQUENCE, got tag %d", outer.Tag)
+	}
+
+	parsed := parseSignerInfo(outer.Bytes)
+	if parsed == nil {
+		t.Fatal("parseSignerInfo returned nil")
+	}
+	if parsed.SignedAttrsSet == nil {
+		t.Fatal("SignedAttrsSet not recovered (finding 9)")
+	}
+	if !bytes.Equal(parsed.MessageDigest, eDigest[:]) {
+		t.Fatal("message-digest attribute not recovered")
+	}
+	if !parsed.ContentType.Equal(oidTSTInfo) {
+		t.Fatal("contentType attribute not recovered")
+	}
+}
+
+func mustOID(t *testing.T, oid asn1.ObjectIdentifier) []byte {
+	t.Helper()
+	b, err := asn1.Marshal(oid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// a0Implicit wraps raw bytes in a [0] IMPLICIT (context, tag 0) tag.
+func a0Implicit(inner []byte) []byte {
+	b, _ := asn1.Marshal(asn1.RawValue{Class: 2, Tag: 0, IsCompound: true, Bytes: inner})
+	return b
+}
+
+func digestForCMS(data []byte) []byte {
+	h := sha256.Sum256(data)
+	return h[:]
 }

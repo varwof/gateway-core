@@ -4,6 +4,7 @@
 package gw
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -13,6 +14,8 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -119,6 +122,67 @@ func (c *CRLCache) IsRevoked(caDN string, serial *big.Int) (bool, error) {
 	return c.revoked[key], nil
 }
 
+// IsRevokedCert checks whether the given certificate is revoked, matching the
+// certificate's issuer against this cache's CA robustly (finding 13): the raw
+// issuer bytes are compared first, falling back to a structural RDN comparison
+// that tolerates RDN ordering/formatting differences. A certificate not issued
+// by this cache's CA is not covered by it and returns not-revoked.
+func (c *CRLCache) IsRevokedCert(cert *x509.Certificate) (bool, error) {
+	if cert == nil {
+		return false, fmt.Errorf("crl: nil certificate")
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if time.Now().After(c.nextUpdate) {
+		return false, fmt.Errorf("CRL expired (nextUpdate %s)", c.nextUpdate.Format(time.RFC3339))
+	}
+	if !c.issuerMatchesCA(cert) {
+		return false, nil // not issued by this CA; this CRL does not cover it
+	}
+	return c.revoked[c.caDN+"|"+cert.SerialNumber.Text(16)], nil
+}
+
+// issuerMatchesCA reports whether cert's issuer names this cache's CA, robust
+// to RDN ordering/formatting differences (finding 13).
+func (c *CRLCache) issuerMatchesCA(cert *x509.Certificate) bool {
+	if c.caCert == nil {
+		return false
+	}
+	if bytes.Equal(cert.RawIssuer, c.caCert.RawSubject) {
+		return true
+	}
+	return rdnSequenceEqual(cert.RawIssuer, c.caCert.RawSubject)
+}
+
+// rdnSequenceEqual compares two DER RDN sequences structurally, ignoring RDN
+// and attribute ordering (semantic equality for certificate name matching).
+func rdnSequenceEqual(a, b []byte) bool {
+	var ra, rb pkix.RDNSequence
+	if _, err := asn1.Unmarshal(a, &ra); err != nil {
+		return false
+	}
+	if _, err := asn1.Unmarshal(b, &rb); err != nil {
+		return false
+	}
+	return canonicalRDNs(ra) == canonicalRDNs(rb)
+}
+
+// canonicalRDNs renders an RDN sequence as a canonical string: each RDN's
+// attributes sorted by "type=value", RDNs sorted lexically.
+func canonicalRDNs(seq pkix.RDNSequence) string {
+	var rdns []string
+	for _, rdn := range seq {
+		var attrs []string
+		for _, atv := range rdn {
+			attrs = append(attrs, atv.Type.String()+"="+fmt.Sprintf("%v", atv.Value))
+		}
+		sort.Strings(attrs)
+		rdns = append(rdns, strings.Join(attrs, "+"))
+	}
+	sort.Strings(rdns)
+	return strings.Join(rdns, ",")
+}
+
 // Stats returns CRL cache statistics (revocation count, this update, next update).
 func (c *CRLCache) Stats() (int, time.Time, time.Time) {
 	c.mu.RLock()
@@ -144,7 +208,7 @@ func (c *CRLCache) refresh() error {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return fmt.Errorf("read CRL body: %w", err)
 	}

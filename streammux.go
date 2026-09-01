@@ -19,8 +19,11 @@ const (
 	muxStreamNew    = 0xFFFFFFFF // streamID for new stream request
 	muxStreamClose  = 0xFFFFFFFE // streamID for stream close notification
 	muxFrameMaxSize = 1 << 20    // 1MB max frame size
-	muxReadBuffer   = 1 << 16    // 64KB read buffer per stream
-	muxWriteBuffer  = 1 << 16    // 64KB write buffer per stream
+	// muxReadBuffer bounds the per-stream receive buffer. A single frame can be
+	// up to muxFrameMaxSize, so the bound must be at least that; exceeding it
+	// (a peer overrunning a stalled consumer) closes the whole mux (finding 14).
+	muxReadBuffer  = 1 << 20 // 1MB max pending data per stream
+	muxWriteBuffer = 1 << 16 // 64KB write buffer per stream
 )
 
 // MuxStream implements net.Conn over a multiplexed mTLS connection.
@@ -243,6 +246,15 @@ func (m *StreamMux) readLoop() {
 			continue
 		}
 		stream.rmu.Lock()
+		if stream.rbuf.Len()+len(data) > muxReadBuffer {
+			// Finding 14: bound the per-stream receive buffer. A peer sending
+			// faster than the consumer reads must not grow memory without limit;
+			// fail the stream (and the mux) closed.
+			stream.rmu.Unlock()
+			m.logger.Warn("streammux: receive buffer overflow, closing mux", "stream", streamID, "pending", stream.rbuf.Len(), "frame", len(data))
+			m.Close()
+			return
+		}
 		stream.rbuf.Write(data)
 		stream.rmu.Unlock()
 		stream.rcond.Broadcast()

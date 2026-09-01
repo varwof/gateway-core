@@ -75,16 +75,29 @@ func maskBasename(name string) string {
 	return string(base[0]) + strings.Repeat(string(DefaultMaskRune), len(base)-2) + string(base[len(base)-1]) + ext
 }
 
-// MaskToken masks an API token or key, keeping only first and last 4 chars.
+// MaskToken masks an API token or key, keeping only first and last 4 chars
+// for long tokens, and proportionally fewer for short tokens so that at least
+// half of the token is always masked (finding 21: a 9-char token must not
+// reveal 8 chars).
 // Example: "sk-abc123def456ghi789" → "sk-a*******i789"
 func MaskToken(token string) string {
 	if token == "" {
 		return ""
 	}
-	if len(token) <= 8 {
-		return strings.Repeat(string(DefaultMaskRune), len(token))
+	n := len(token)
+	if n <= 8 {
+		return strings.Repeat(string(DefaultMaskRune), n)
 	}
-	return token[:4] + strings.Repeat(string(DefaultMaskRune), len(token)-8) + token[len(token)-4:]
+	// Keep at most 4 chars per side, but never more than half of the token
+	// combined — for 9..16 char tokens this reduces the visible portion.
+	keep := 4
+	if maxKeep := n / 2; keep > maxKeep/2 {
+		keep = maxKeep / 2
+	}
+	if keep < 1 {
+		keep = 1
+	}
+	return token[:keep] + strings.Repeat(string(DefaultMaskRune), n-2*keep) + token[n-keep:]
 }
 
 // MaskEmail masks an email address, keeping domain visible.

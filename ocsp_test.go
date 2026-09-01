@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -137,6 +138,50 @@ func TestOCSPFallbackStrings(t *testing.T) {
 	}
 }
 
+// TestOCSPFallbackCRLConsultsCRL (finding 3): fallback=crl must actually consult
+// the CRL and fail closed (revoked → error, unconfigured → error, not silently
+// allow).
+func TestOCSPFallbackCRLConsultsCRL(t *testing.T) {
+	leaf := makeOCSPTestCert(t, "")
+
+	t.Run("unconfigured checker fails closed", func(t *testing.T) {
+		c := NewOCSPCache(5*time.Minute, OCSPFallbackCRL, nil, "en")
+		if err := c.Check(leaf, nil); err == nil {
+			t.Fatal("fallback=crl without a CRL checker must fail closed")
+		}
+	})
+
+	t.Run("revoked cert rejected", func(t *testing.T) {
+		c := NewOCSPCache(5*time.Minute, OCSPFallbackCRL, nil, "en")
+		c.SetCRLChecker(func(caDN string, serial *big.Int) (bool, error) {
+			return true, nil
+		})
+		if err := c.Check(leaf, nil); err == nil {
+			t.Fatal("revoked cert must be rejected by the crl fallback")
+		}
+	})
+
+	t.Run("crl error fails closed", func(t *testing.T) {
+		c := NewOCSPCache(5*time.Minute, OCSPFallbackCRL, nil, "en")
+		c.SetCRLChecker(func(caDN string, serial *big.Int) (bool, error) {
+			return false, errors.New("CRL unavailable")
+		})
+		if err := c.Check(leaf, nil); err == nil {
+			t.Fatal("CRL check failure must fail closed")
+		}
+	})
+
+	t.Run("valid cert allowed", func(t *testing.T) {
+		c := NewOCSPCache(5*time.Minute, OCSPFallbackCRL, nil, "en")
+		c.SetCRLChecker(func(caDN string, serial *big.Int) (bool, error) {
+			return false, nil
+		})
+		if err := c.Check(leaf, nil); err != nil {
+			t.Fatalf("valid cert should pass crl fallback, got: %v", err)
+		}
+	})
+}
+
 // H2: concurrent Check calls for the same cert must coalesce into a single
 // OCSP fetch (no stampede / double fetch). Before the single-lock fix two
 // goroutines could both observe !inFlight and both fetch the same key.
@@ -241,5 +286,67 @@ func TestOCSPCoalesceSingleFetch(t *testing.T) {
 	got := atomic.LoadInt64(&hits)
 	if got != 1 {
 		t.Errorf("OCSP responder hit %d times, want exactly 1 (coalesced), %d concurrent callers", got, n)
+	}
+}
+
+// TestOCSPFreshness (finding 7): a stale OCSP "Good" response (next_update in
+// the past) must not be honored as valid.
+func TestOCSPFreshness(t *testing.T) {
+	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	caDER, _ := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	caCert, _ := x509.ParseCertificate(caDER)
+
+	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	leafTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(42),
+		Subject:      pkix.Name{CommonName: "test-leaf"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+	leafDER, _ := x509.CreateCertificate(rand.Reader, leafTmpl, caCert, &leafKey.PublicKey, caKey)
+	leafCert, _ := x509.ParseCertificate(leafDER)
+
+	// Stale response: next_update already in the past.
+	now := time.Now()
+	respTmpl := ocsp.Response{
+		Status:       ocsp.Good,
+		SerialNumber: leafCert.SerialNumber,
+		ThisUpdate:   now.Add(-2 * time.Hour),
+		NextUpdate:   now.Add(-time.Hour),
+		ProducedAt:   now.Add(-2 * time.Hour),
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		der, err := ocsp.CreateResponse(caCert, caCert, respTmpl, caKey)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/ocsp-response")
+		w.Write(der)
+	}))
+	defer srv.Close()
+
+	desc := accessDescription{
+		Method: OCSPOID,
+		Location: asn1.RawValue{
+			Class: asn1.ClassContextSpecific,
+			Tag:   6,
+			Bytes: []byte(srv.URL),
+		},
+	}
+	aiaBytes, _ := asn1.Marshal([]accessDescription{desc})
+	leafCert.Extensions = []pkix.Extension{{Id: AIAOID, Value: aiaBytes}}
+
+	cache := NewOCSPCache(time.Minute, OCSPFallbackDeny, nil, "en")
+	if err := cache.Check(leafCert, caCert); err == nil {
+		t.Fatal("stale OCSP response must be rejected, not honored as valid")
 	}
 }

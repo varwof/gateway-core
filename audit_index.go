@@ -17,6 +17,11 @@ type AuditIndex struct {
 	db *bolt.DB
 }
 
+// MaxPostingsPerKey caps the number of hash postings kept under a single
+// by_cn / by_serial / by_word key (finding 23). Without a bound these postings
+// lists grow forever on high-activity keys (common CN, common word).
+const MaxPostingsPerKey = 1000
+
 // AuditIndexEntry is an audit index entry containing hash and metadata.
 type AuditIndexEntry struct {
 	Hash     string `json:"hash"`
@@ -99,16 +104,14 @@ func (idx *AuditIndex) Index(entry *AuditEntry) error {
 
 		if idxEntry.CN != "" {
 			bc := tx.Bucket([]byte("by_cn"))
-			existing := bc.Get([]byte(idxEntry.CN))
-			updated := append(existing, []byte(hash+"\n")...)
+			updated := appendPosting(bc.Get([]byte(idxEntry.CN)), hash, '\n', MaxPostingsPerKey)
 			if err := bc.Put([]byte(idxEntry.CN), updated); err != nil {
 				return err
 			}
 		}
 		if idxEntry.Serial != "" {
 			bs := tx.Bucket([]byte("by_serial"))
-			existing := bs.Get([]byte(idxEntry.Serial))
-			updated := append(existing, []byte(hash+"\n")...)
+			updated := appendPosting(bs.Get([]byte(idxEntry.Serial)), hash, '\n', MaxPostingsPerKey)
 			if err := bs.Put([]byte(idxEntry.Serial), updated); err != nil {
 				return err
 			}
@@ -296,4 +299,29 @@ func splitLines(data []byte) []string {
 		lines = append(lines, string(data[start:]))
 	}
 	return lines
+}
+
+// appendPosting appends hash to an existing postings list (separated by sep),
+// evicting the oldest entries so the list never exceeds max. Finding 23: the
+// by_cn / by_serial postings must not grow without bound on hot keys.
+func appendPosting(existing []byte, hash string, sep byte, max int) []byte {
+	if len(existing) == 0 {
+		return []byte(hash)
+	}
+	lines := splitLines(existing)
+	lines = append(lines, hash)
+	if max > 0 && len(lines) > max {
+		lines = lines[len(lines)-max:]
+	}
+	out := make([]byte, 0, len(existing)+len(hash)+1)
+	for i, l := range lines {
+		if i > 0 {
+			out = append(out, sep)
+		}
+		out = append(out, l...)
+	}
+	if sep != '\n' {
+		return append(out, sep)
+	}
+	return out
 }

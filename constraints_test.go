@@ -168,7 +168,7 @@ func TestCheckAuthorizationConstraints_CIDR(t *testing.T) {
 		{"array first of two", cidrCap(`["10.0.0.0/8","172.16.0.0/12"]`), "172.16.5.5", false},
 		{"object hit", cidrCap(`{"cidrs":["10.0.0.0/8","172.16.0.0/12"]}`), "10.1.2.3", false},
 		{"object miss", cidrCap(`{"cidrs":["10.0.0.0/8"]}`), "192.168.1.1", true},
-		{"no client ip skip", cidrCap(`["10.0.0.0/8"]`), "", false},
+		{"no client ip fails closed", cidrCap(`["10.0.0.0/8"]`), "", true},
 		{"empty cidrs skip", cidrCap(`[]`), "192.168.1.1", false},
 		{"invalid cidr", cidrCap(`["not-a-cidr"]`), "10.1.2.3", true},
 		{"invalid json", cidrCap(`{`), "10.1.2.3", true},
@@ -267,7 +267,7 @@ func TestCheckAuthorizationConstraints_GeoFence_Inline(t *testing.T) {
 		{"region A second cidr", "192.168.10.1", false},
 		{"region B hit", "172.16.5.5", false},
 		{"miss", "203.0.113.7", true},
-		{"no client ip skip", "", false},
+		{"no client ip fails closed", "", true},
 		{"invalid ip", "nope", true},
 	}
 	for _, tc := range cases {

@@ -25,6 +25,12 @@ var oidSha256 = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1}
 var oidTSTInfo = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 16, 1, 4}
 var oidSignedData = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 2}
 
+// CMS signedAttrs attribute OIDs (RFC 5652 §11).
+var (
+	oidContentType   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 3}
+	oidMessageDigest = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 4}
+)
+
 // TimeStampReq is an RFC 3161 timestamp request.
 type TimeStampReq struct {
 	Version        int
@@ -86,7 +92,50 @@ type cmsSignerInfo struct {
 	DigestAlgorithm asn1.ObjectIdentifier
 	SignatureAlgo   asn1.ObjectIdentifier
 	SignedAttrsRaw  []byte // raw DER of [0] IMPLICIT SignedAttributes (including tag)
-	SignatureValue  []byte
+	// SignedAttrsSet is the RFC 5652 §5.4 SET OF encoding of SignedAttributes,
+	// which is the value the signature is computed over (not the [0] form).
+	SignedAttrsSet []byte
+	// MessageDigest is the value of the message-digest attribute (digest of the
+	// encapContent), used to cross-check the timestamped data (finding 9).
+	MessageDigest []byte
+	// ContentType is the value of the contentType attribute (must be
+	// id-ct-TSTInfo for RFC 3161).
+	ContentType    asn1.ObjectIdentifier
+	SignatureValue []byte
+}
+
+// cmsAttribute is a single CMS signedAttr Attribute.
+type cmsAttribute struct {
+	Type   asn1.ObjectIdentifier
+	Values []asn1.RawValue `asn1:"set"`
+}
+
+// parseSignedAttrs decodes an RFC 5652 SignedAttributes SET OF into its
+// Attributes. data must be the DER-encoded SET OF (starting with tag 0x31).
+func parseSignedAttrs(data []byte) ([]cmsAttribute, error) {
+	var set asn1.RawValue
+	if _, err := asn1.Unmarshal(data, &set); err != nil {
+		return nil, err
+	}
+	if set.Tag != asn1.TagSet {
+		return nil, fmt.Errorf("expected SET OF for SignedAttributes, got tag %d", set.Tag)
+	}
+	var rest = set.Bytes
+	var attrs []cmsAttribute
+	for len(rest) > 0 {
+		var el asn1.RawValue
+		remaining, err := asn1.Unmarshal(rest, &el)
+		if err != nil {
+			return nil, err
+		}
+		var a cmsAttribute
+		if _, err := asn1.Unmarshal(el.FullBytes, &a); err != nil {
+			return nil, err
+		}
+		attrs = append(attrs, a)
+		rest = remaining
+	}
+	return attrs, nil
 }
 
 // TSAClient is an RFC 3161 timestamp client.
@@ -204,7 +253,7 @@ func (t *TSAClient) Verify(entryJSON, tstDER []byte) error {
 		return fmt.Errorf("tsa client not configured")
 	}
 
-	tstInfo, certs, signerInfo, err := extractTSTInfoFromCMS(tstDER)
+	tstInfo, certs, signerInfo, eContent, err := extractTSTInfoFromCMS(tstDER)
 	if err != nil {
 		return fmt.Errorf("extract TSTInfo: %w", err)
 	}
@@ -238,56 +287,62 @@ func (t *TSAClient) Verify(entryJSON, tstDER []byte) error {
 	}
 
 	// G4 fix: verify the CMS SignerInfo signature over the timestamp data.
-	if err := verifyCMSSignature(signerInfo, certs, tstInfo.MessageImprint.HashedMessage); err != nil {
+	if err := verifyCMSSignature(signerInfo, certs, eContent); err != nil {
 		return fmt.Errorf("CMS signature verification failed: %w", err)
 	}
 
 	return nil
 }
 
-func extractTSTInfoFromCMS(tstDER []byte) (*TSTInfo, []*x509.Certificate, *cmsSignerInfo, error) {
+func extractTSTInfoFromCMS(tstDER []byte) (*TSTInfo, []*x509.Certificate, *cmsSignerInfo, []byte, error) {
 	var ci cmsContentInfo
 	if _, err := asn1.Unmarshal(tstDER, &ci); err != nil {
-		return nil, nil, nil, fmt.Errorf("parse CMS ContentInfo: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("parse CMS ContentInfo: %w", err)
 	}
 	if !ci.ContentType.Equal(oidSignedData) {
-		return nil, nil, nil, fmt.Errorf("expected id-signedData (%v), got %v", oidSignedData, ci.ContentType)
+		return nil, nil, nil, nil, fmt.Errorf("expected id-signedData (%v), got %v", oidSignedData, ci.ContentType)
 	}
 
 	sdRaw, err := parseRawValue(ci.Content.Bytes)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("parse SignedData SEQUENCE: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("parse SignedData SEQUENCE: %w", err)
 	}
 	if sdRaw.Tag != asn1.TagSequence {
-		return nil, nil, nil, fmt.Errorf("expected SEQUENCE for SignedData")
+		return nil, nil, nil, nil, fmt.Errorf("expected SEQUENCE for SignedData")
 	}
 
 	rest := sdRaw.Bytes
 
 	var raw asn1.RawValue
 	if rest, err = asn1.Unmarshal(rest, &raw); err != nil {
-		return nil, nil, nil, fmt.Errorf("parse signedData version: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("parse signedData version: %w", err)
 	}
 	if rest, err = asn1.Unmarshal(rest, &raw); err != nil {
-		return nil, nil, nil, fmt.Errorf("parse digestAlgorithms: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("parse digestAlgorithms: %w", err)
 	}
 
 	var eciRaw asn1.RawValue
 	if rest, err = asn1.Unmarshal(rest, &eciRaw); err != nil {
-		return nil, nil, nil, fmt.Errorf("parse encapContentInfo: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("parse encapContentInfo: %w", err)
 	}
 
 	var eci cmsEncapContentInfo
 	if _, err := asn1.Unmarshal(eciRaw.Bytes, &eci); err != nil {
-		return nil, nil, nil, fmt.Errorf("parse encapContentInfo inner: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("parse encapContentInfo inner: %w", err)
 	}
 	if !eci.ContentType.Equal(oidTSTInfo) {
-		return nil, nil, nil, fmt.Errorf("expected id-ct-TSTInfo (%v), got %v", oidTSTInfo, eci.ContentType)
+		return nil, nil, nil, nil, fmt.Errorf("expected id-ct-TSTInfo (%v), got %v", oidTSTInfo, eci.ContentType)
 	}
+	if len(eci.Content.Bytes) == 0 {
+		return nil, nil, nil, nil, fmt.Errorf("missing eContent (TSTInfo octets)")
+	}
+	// eci.Content.Bytes is the encapContentInfo eContent octets (the TSTInfo DER);
+	// both the TSTInfo parse and the message-digest cross-check use these bytes.
+	eContent := eci.Content.Bytes
 
 	var tstInfo TSTInfo
-	if _, err := asn1.Unmarshal(eci.Content.Bytes, &tstInfo); err != nil {
-		return nil, nil, nil, fmt.Errorf("parse TSTInfo: %w", err)
+	if _, err := asn1.Unmarshal(eContent, &tstInfo); err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("parse TSTInfo: %w", err)
 	}
 
 	var certs []*x509.Certificate
@@ -313,7 +368,7 @@ func extractTSTInfoFromCMS(tstDER []byte) (*TSTInfo, []*x509.Certificate, *cmsSi
 		}
 	}
 
-	return &tstInfo, certs, signerInfo, nil
+	return &tstInfo, certs, signerInfo, eContent, nil
 }
 
 func parseRawValue(data []byte) (*asn1.RawValue, error) {
@@ -428,9 +483,33 @@ func parseSignerInfo(data []byte) *cmsSignerInfo {
 
 	// signedAttrs [0] IMPLICIT — optional
 	var signedAttrsRaw []byte
+	si := &cmsSignerInfo{}
 	if len(rest) > 0 && rest[0] == 0xa0 {
 		rest, _ = asn1.Unmarshal(rest, &raw)
 		signedAttrsRaw = raw.FullBytes
+		si.SignedAttrsRaw = signedAttrsRaw
+		// RFC 5652 §5.4: the signature is over the DER encoding of SignedAttributes
+		// as a SET OF (tag 0x31), not the [0] IMPLICIT wrapper (tag 0xA0).
+		// Iterate the SET content manually (Go's asn1 cannot unmarshal a SET OF
+		// directly into a struct slice).
+		if attrs, err := parseSignedAttrs(raw.Bytes); err == nil {
+			if set, err := asn1.MarshalWithParams(attrs, "set"); err == nil {
+				si.SignedAttrsSet = set
+			}
+			for _, a := range attrs {
+				switch {
+				case a.Type.Equal(oidContentType) && len(a.Values) == 1:
+					var oid asn1.ObjectIdentifier
+					if _, err := asn1.Unmarshal(a.Values[0].FullBytes, &oid); err == nil {
+						si.ContentType = oid
+					}
+				case a.Type.Equal(oidMessageDigest) && len(a.Values) == 1:
+					// message-digest value is an OCTET STRING; RawValue.Bytes is
+					// the octet content.
+					si.MessageDigest = a.Values[0].Bytes
+				}
+			}
+		}
 	}
 
 	// signatureAlgorithm
@@ -441,12 +520,11 @@ func parseSignerInfo(data []byte) *cmsSignerInfo {
 	// signature (OCTET STRING)
 	rest, _ = asn1.Unmarshal(rest, &raw)
 
-	return &cmsSignerInfo{
-		DigestAlgorithm: digestOID,
-		SignatureAlgo:   sigOID,
-		SignedAttrsRaw:  signedAttrsRaw,
-		SignatureValue:  raw.Bytes,
-	}
+	si.DigestAlgorithm = digestOID
+	si.SignatureAlgo = sigOID
+	si.SignatureValue = raw.Bytes
+
+	return si
 }
 
 // parseAlgorithmOID extracts the OID from a DER-encoded AlgorithmIdentifier.
@@ -460,9 +538,12 @@ func parseAlgorithmOID(data []byte) asn1.ObjectIdentifier {
 	return algo.OID
 }
 
-// verifyCMSSignature verifies the CMS SignerInfo signature over the
-// encapContentInfo (or signedAttrs if present).
-func verifyCMSSignature(si *cmsSignerInfo, certs []*x509.Certificate, encapContent []byte) error {
+// verifyCMSSignature verifies the CMS SignerInfo signature. Per RFC 5652 §5.4
+// and RFC 3161 §2.4.2, when signedAttrs are present the signature is computed
+// over the DER encoding of the SignedAttributes SET OF, and the signed
+// message-digest attribute must equal the digest of the encapContentInfo
+// eContent. Both are enforced here (finding 9).
+func verifyCMSSignature(si *cmsSignerInfo, certs []*x509.Certificate, eContent []byte) error {
 	if si == nil {
 		return fmt.Errorf("no SignerInfo to verify")
 	}
@@ -474,16 +555,27 @@ func verifyCMSSignature(si *cmsSignerInfo, certs []*x509.Certificate, encapConte
 		return fmt.Errorf("no TSA signer certificate found")
 	}
 
-	// Compute the data to verify: signedAttrs if present, otherwise encapContent
-	var toVerify []byte
-	if si.SignedAttrsRaw != nil {
-		toVerify = si.SignedAttrsRaw
-	} else {
-		toVerify = encapContent
+	hasher := crypto.SHA256
+	if si.SignedAttrsSet != nil {
+		// contentType must be id-ct-TSTInfo (RFC 3161 §2.4.2).
+		if !si.ContentType.Equal(oidTSTInfo) {
+			return fmt.Errorf("signedAttrs contentType attribute: got %v, want id-ct-TSTInfo", si.ContentType)
+		}
+		// message-digest must equal digest of eContent (RFC 5652 §5.4).
+		h := hasher.New()
+		h.Write(eContent)
+		if !bytes.Equal(si.MessageDigest, h.Sum(nil)) {
+			return fmt.Errorf("signedAttrs message-digest does not match eContent")
+		}
 	}
 
-	// Hash the data
-	hasher := crypto.SHA256
+	// Compute the data the signature covers: the signedAttrs SET OF encoding
+	// when present, otherwise the eContent.
+	toVerify := si.SignedAttrsSet
+	if toVerify == nil {
+		toVerify = eContent
+	}
+
 	h := hasher.New()
 	h.Write(toVerify)
 	digest := h.Sum(nil)
@@ -537,7 +629,7 @@ func (t *TSAClient) postTSA(reqData []byte) ([]byte, error) {
 	}
 	defer httpResp.Body.Close()
 
-	body, err := io.ReadAll(httpResp.Body)
+	body, err := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("read TSA response: %w", err)
 	}
@@ -552,7 +644,7 @@ func MarshalTSARequest(req TimeStampReq) ([]byte, error) {
 
 // UnmarshalTimestampToken parses a timestamp token from DER.
 func UnmarshalTimestampToken(data []byte) (*TSTInfo, error) {
-	tstInfo, _, _, err := extractTSTInfoFromCMS(data)
+	tstInfo, _, _, _, err := extractTSTInfoFromCMS(data)
 	return tstInfo, err
 }
 

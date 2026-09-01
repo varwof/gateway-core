@@ -561,8 +561,13 @@ func CheckAdmission(cert *x509.Certificate, cfg AdmissionConfig) AdmissionResult
 				}
 				userCert = cert
 			} else {
-				// Without KeyHash, cross-validation is impossible; falls back to signature verification (VerifyDelegationAuth decides).
-				userCert = cert
+				// Finding 16: without a KeyHash there is no way to establish that the
+				// peer certificate is the authorized principal, so a self-authorization
+				// fallback would let an agent fill its own RequireUserAuth. Fail closed.
+				return AdmissionResult{
+					Decision: DecisionDeny,
+					Reason:   "user_auth: no authorization certificate and no keyHash to bind the peer certificate",
+				}
 			}
 		}
 		if err := VerifyDelegationAuth(aic, userCert); err != nil {
@@ -864,11 +869,29 @@ func HasDelegatedAgentOU(cert *x509.Certificate) bool {
 }
 
 // CheckDelegatedAgentCert validates the legitimacy of a Delegated-Agent certificate (for non-HTTP protocols like TCP).
-// Checks whether the certificate contains a Delegated-Agent OU.
 // Returns empty string on success, non-empty rejection reason on failure.
+//
+// A certificate that merely carries the "Delegated-Agent" OU is not legitimate
+// on its own (finding 17): the OU is a plaintext subject attribute anyone can
+// mint, so a Delegated-Agent cert must additionally be core-signed (carry a
+// valid AIC extension) and be within its validity window. Certificates without
+// the OU are not delegated-agent certs and pass through.
 func CheckDelegatedAgentCert(cert *x509.Certificate) string {
+	if cert == nil {
+		return "nil certificate"
+	}
 	if !hasDelegatedAgentOU(cert) {
 		return ""
+	}
+	if now := time.Now(); now.Before(cert.NotBefore) {
+		return "Delegated-Agent certificate not yet valid"
+	}
+	if now := time.Now(); now.After(cert.NotAfter) {
+		return "Delegated-Agent certificate expired"
+	}
+	aic, err := ParseAIC(cert)
+	if err != nil || aic == nil {
+		return "Delegated-Agent certificate lacks a valid core-signed AIC"
 	}
 	return ""
 }
@@ -918,6 +941,9 @@ func DelegatedAgentServerIdentity(cert *x509.Certificate, principal string) (use
 	if !hasDelegatedAgentOU(cert) {
 		return "", time.Time{}, ""
 	}
+	// Finding 17: the delegation cannot outlive its certificate — bind the
+	// validity deadline to the cert's NotAfter instead of returning zero.
+	expiry = cert.NotAfter
 	if principal != "" {
 		user = principal
 	} else {

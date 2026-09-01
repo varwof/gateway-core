@@ -1015,12 +1015,15 @@ func TestPipelineOfflineLifetime(t *testing.T) {
 	})
 }
 
-// TestOfflineLifetimeFor verifies G2(b) helper: OCSPFallbackAllow -> 1h, others 0.
+// TestOfflineLifetimeFor verifies G2(b) helper: OCSPFallbackAllow and
+// OCSPFallbackCRL -> 1h cap (finding 11), deny/disabled -> 0.
 func TestOfflineLifetimeFor(t *testing.T) {
-	if got := OfflineLifetimeFor(OCSPFallbackAllow); got != time.Hour {
-		t.Fatalf("allow → want 1h, got %s", got)
+	for _, fb := range []string{OCSPFallbackAllow, OCSPFallbackCRL} {
+		if got := OfflineLifetimeFor(fb); got != time.Hour {
+			t.Fatalf("%q → want 1h, got %s", fb, got)
+		}
 	}
-	for _, fb := range []string{OCSPFallbackDeny, OCSPFallbackCRL, "", "bogus"} {
+	for _, fb := range []string{OCSPFallbackDeny, "", "bogus"} {
 		if got := OfflineLifetimeFor(fb); got != 0 {
 			t.Fatalf("%q → want 0, got %s", fb, got)
 		}

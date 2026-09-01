@@ -57,6 +57,22 @@ type TLSConfig struct {
 	// carrier). Empty disables bearer authentication.
 	JWTCAFile string `json:"jwt_ca_file,omitempty"`
 
+	// JWTIssuer is the expected iss claim for bearer tokens. When empty the
+	// issuer is not checked; set it to bind bearers to a specific issuer
+	// (finding 5).
+	JWTIssuer string `json:"jwt_issuer,omitempty"`
+
+	// JWTAudience lists the acceptable aud claims for bearer tokens. When empty
+	// the audience is not checked; set it to prevent audience confusion
+	// (finding 5).
+	JWTAudience []string `json:"jwt_audience,omitempty"`
+
+	// JWTReplayProtection enables one-time-use jti/DA-nonce replay protection
+	// for bearer tokens (process-local store). Default true when JWTCAFile is
+	// set; multi-node deployments should supply a shared nonce store instead
+	// (finding 5).
+	JWTReplayProtection *bool `json:"jwt_replay_protection,omitempty"`
+
 	// CertFile is the server certificate file path (required for server/mtls modes).
 	CertFile string `json:"cert_file,omitempty"`
 
@@ -359,6 +375,10 @@ func (h *HTTPExtra) WriteTimeout() time.Duration {
 // ── UDP-specific extensions ─────────────────────────────────────────────────
 // UDPExtra holds fields unique to UDP gateways.
 
+// MaxAmplificationDefault is the default response amplification factor applied
+// when UDPExtra.MaxAmplification is unset. See UDPExtra.MaxAmplification.
+const MaxAmplificationDefault = 16
+
 type UDPExtra struct {
 	// RequireDelegation whether dual-certificate delegation mode is required.
 	RequireDelegation *bool `json:"require_delegation,omitempty"`
@@ -377,6 +397,30 @@ type UDPExtra struct {
 
 	// DisconnectOnExpirySec is automatic disconnect delay on certificate expiry in seconds.
 	DisconnectOnExpirySec int `json:"disconnect_on_expiry_sec,omitempty"`
+
+	// MaxAmplification caps the relayed response size relative to the request
+	// size (0 = default factor). Plaintext UDP relays are otherwise reflection
+	// amplifiers: a small spoofed-source query can elicit a large response
+	// sent to the victim. The response is dropped when it exceeds
+	// len(request) * factor (with a small floor), bounding amplification.
+	MaxAmplification int `json:"max_amplification,omitempty"`
+
+	// RequirePlaintextRelayRateLimit forces per-IP rate limiting on plaintext
+	// (unauthenticated) UDP listeners even when max_pkts_per_ip is unset. When
+	// true and the listener is plaintext, a default per-IP cap is applied so
+	// an unauthenticated relay cannot be used for sustained amplification.
+	// Default false (operator opt-in keeps legacy configs working); the
+	// per-IP rate limiting of a plaintext relay is strongly recommended.
+	RequirePlaintextRelayRateLimit *bool `json:"require_plaintext_relay_rate_limit,omitempty"`
+}
+
+// MaxAmplificationFactor returns the effective response amplification factor,
+// defaulting to MaxAmplificationDefault when unset or <= 0.
+func (u *UDPExtra) MaxAmplificationFactor() int {
+	if u == nil || u.MaxAmplification <= 0 {
+		return MaxAmplificationDefault
+	}
+	return u.MaxAmplification
 }
 
 func (u *UDPExtra) RequireDelegationEnabled() bool {
@@ -385,4 +429,10 @@ func (u *UDPExtra) RequireDelegationEnabled() bool {
 
 func (u *UDPExtra) DisconnectOnExpiryEnabled() bool {
 	return u != nil && u.DisconnectOnExpirySec > 0
+}
+
+// RequirePlaintextRelayRateLimitEnabled reports whether plaintext UDP
+// listeners must apply default per-IP rate limiting.
+func (u *UDPExtra) RequirePlaintextRelayRateLimitEnabled() bool {
+	return u != nil && u.RequirePlaintextRelayRateLimit != nil && *u.RequirePlaintextRelayRateLimit
 }

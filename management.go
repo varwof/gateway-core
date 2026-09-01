@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/asn1"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -93,6 +94,16 @@ func (ms *ManagementServer) RegisterRawHandler(pattern string, handler http.Hand
 
 // Start starts the management API HTTP service.
 func (ms *ManagementServer) Start() error {
+	// Finding 12: role authorization (RequireRoles) reads role OUs from
+	// r.TLS.PeerCertificates. If the server does not require and verify client
+	// certificates, those roles are attacker-controlled. Refuse to start rather
+	// than run an authorization bypass.
+	if ms.cfg.TLSConfig == nil {
+		return errors.New("management: TLSConfig is required (management API must run under mTLS)")
+	}
+	if ms.cfg.TLSConfig.ClientAuth != tls.RequireAndVerifyClientCert {
+		return errors.New("management: TLSConfig.ClientAuth must be tls.RequireAndVerifyClientCert; refusing to run with unverified client certificates (finding 12)")
+	}
 	srv := &http.Server{
 		Addr:      ms.cfg.Listen,
 		TLSConfig: ms.cfg.TLSConfig,
@@ -916,6 +927,11 @@ func MakeConfirmedRenewalRequestHandler(m *ConfirmedRenewalManager, tr Translato
 		if req.SessionID == "" || req.CN == "" {
 			WriteMgmtError(w, http.StatusBadRequest, "session_id and cn are required")
 			return
+		}
+		// Two-party control (finding 2): record the authenticated requester
+		// identity server-side so Confirm can refuse self-approval.
+		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			req.RequesterKeyHash = KeyHashHex(r.TLS.PeerCertificates[0])
 		}
 		if err := m.RequestRenewal(&req); err != nil {
 			WriteMgmtError(w, http.StatusConflict, err.Error())

@@ -48,6 +48,24 @@ func TestNewManagementServer(t *testing.T) {
 	}
 }
 
+// TestManagementStartRequiresMTLS (finding 12): Start must refuse to run when
+// the TLS config does not require and verify client certificates.
+func TestManagementStartRequiresMTLS(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testTLSConfig(t, dir)
+	cfg.ClientAuth = tls.NoClientCert
+	ms := NewManagementServer(ManagementServerConfig{
+		Listen:    "127.0.0.1:0",
+		TLSConfig: cfg,
+	})
+	if err := ms.Start(); err == nil {
+		t.Fatal("Start must refuse a TLS config without RequireAndVerifyClientCert")
+	}
+	if ms.server != nil {
+		t.Fatal("server must not be bound when refusing to start")
+	}
+}
+
 func TestManagementStartStop(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testTLSConfig(t, dir)
@@ -745,6 +763,8 @@ func testTLSConfig(t *testing.T, dir string) *tls.Config {
 	srv := testCert(t, dir, "server", ca, caKey, nil)
 	return &tls.Config{
 		Certificates: []tls.Certificate{srv.TLSCertificate()},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    clientCAPool(t, dir),
 	}
 }
 

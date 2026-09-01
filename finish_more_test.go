@@ -5,6 +5,7 @@ package gw
 
 import (
 	"crypto/tls"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -107,16 +108,23 @@ func TestOCSPFallbackErrBranches(t *testing.T) {
 		"ocsp.fallback_crl":   "crl %s",
 		"ocsp.fallback_deny":  "deny %s",
 	}}
+	leaf := makeOCSPTestCert(t, "")
 	c := NewOCSPCache(time.Minute, OCSPFallbackAllow, tr, "en")
-	if err := c.fallbackErr("boom %d", 1); err != nil {
+	if err := c.fallbackErr(leaf, "boom %d", 1); err != nil {
 		t.Errorf("allow fallback should return nil, got %v", err)
 	}
+	// Finding 3: crl fallback now consults the CRL; with no checker it must fail
+	// closed, and with a non-revoked result it allows.
 	c.fallback = OCSPFallbackCRL
-	if err := c.fallbackErr("boom %d", 2); err != nil {
-		t.Errorf("crl fallback should return nil, got %v", err)
+	if err := c.fallbackErr(leaf, "boom %d", 2); err == nil {
+		t.Error("crl fallback without a CRL checker must fail closed")
+	}
+	c.SetCRLChecker(func(caDN string, serial *big.Int) (bool, error) { return false, nil })
+	if err := c.fallbackErr(leaf, "boom %d", 2); err != nil {
+		t.Errorf("crl fallback with non-revoked result should return nil, got %v", err)
 	}
 	c.fallback = OCSPFallbackDeny
-	if err := c.fallbackErr("boom %d", 3); err == nil {
+	if err := c.fallbackErr(leaf, "boom %d", 3); err == nil {
 		t.Error("deny fallback should return error")
 	}
 }

@@ -179,7 +179,7 @@ func VerifyLayer3(chain []*x509.Certificate, cfg *PipelineConfig) *Layer3Result 
 // checkRevocation performs CRL/OCSP revocation check on a single certificate.
 func checkRevocation(cert, issuer *x509.Certificate, cfg *PipelineConfig) error {
 	if cfg.CRLCache != nil {
-		if revoked, err := cfg.CRLCache.IsRevoked(cert.Issuer.String(), cert.SerialNumber); err != nil {
+		if revoked, err := cfg.CRLCache.IsRevokedCert(cert); err != nil {
 			return fmt.Errorf("crl check error: %v", err)
 		} else if revoked {
 			return fmt.Errorf("certificate revoked (CRL)")

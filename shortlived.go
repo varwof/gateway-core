@@ -67,6 +67,10 @@ type IssueRequest struct {
 	AgentType      *int   `json:"agent_type,omitempty"`
 	AgentId        string `json:"agent_id,omitempty"`
 	MarketAccessId string `json:"market_access_id,omitempty"`
+	// OldSerial, when non-empty, records the certificate serial being renewed so
+	// the issuer can carry a linkage back to the original (finding 4). A renewed
+	// certificate is then traceable to its predecessor for revocation purposes.
+	OldSerial string `json:"old_serial,omitempty"`
 }
 
 // IssueResult is the result of a short-lived certificate issuance.
@@ -170,7 +174,7 @@ func (c *IssueClient) Issue(req *IssueRequest) (*IssueResult, error) {
 			lastErr = fmt.Errorf("issue: request failed: %w", err)
 			continue
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
 
 		if resp.StatusCode == http.StatusOK {

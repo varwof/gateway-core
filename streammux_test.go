@@ -9,6 +9,7 @@ import (
 	"net"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestStreamMuxOpenClose(t *testing.T) {
@@ -209,4 +210,47 @@ func TestStreamMuxLargeData(t *testing.T) {
 		accepted.Close()
 	}()
 	wg.Wait()
+}
+
+// TestStreamMuxReceiveBufferBound (finding 14): a peer flooding a stream faster
+// than it is consumed must close the mux instead of growing memory without
+// limit.
+func TestStreamMuxReceiveBufferBound(t *testing.T) {
+	ca, cb := net.Pipe()
+	muxA := NewStreamMux(ca)
+	muxB := NewStreamMux(cb)
+	defer muxA.Close()
+	defer muxB.Close()
+
+	stream, err := muxA.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := muxB.Accept(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Send two max-size frames (~2MB) that the receiver never reads: the second
+	// frame must overflow the per-stream receive buffer and close the mux.
+	frame := make([]byte, muxFrameMaxSize)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = stream.Write(frame)
+		_, _ = stream.Write(frame)
+	}()
+
+	// The receiver's read loop should hit the overflow guard and stop the mux.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if muxB.stopped.Load() {
+			select {
+			case <-done:
+			default:
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("muxB must stop when a stream's receive buffer is overrun (finding 14)")
 }

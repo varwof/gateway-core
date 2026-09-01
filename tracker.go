@@ -89,10 +89,9 @@ func (t *ConnectionTracker) Render() string {
 		t.mu.Lock()
 		c := t.conns[k]
 		t.mu.Unlock()
-		serial := k
-		if len(serial) > 16 {
-			serial = serial[:16]
-		}
+		// Finding 21: never expose raw serials/prefixes in metrics output —
+		// mask to the last few chars so connections can't be attributed.
+		serial := MaskCertSerial(k)
 		b.WriteString(fmt.Sprintf("cert_%s %d\n", serial, c))
 	}
 	return b.String()

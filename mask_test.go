@@ -87,12 +87,23 @@ func TestMaskToken(t *testing.T) {
 		{"short token", "abcdef", "******"},
 		{"typical API key", "sk-abc123def456ghi789", "sk-a*************i789"},
 		{"exact 8 chars", "12345678", "********"},
+		{"9 chars masks half", "abcdefghi", "ab*****hi"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := MaskToken(tt.input)
 			if got != tt.want {
 				t.Errorf("MaskToken(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+			// Finding 21: never reveal more than half of a short token.
+			revealed := 0
+			for i := 0; i < len(got); i++ {
+				if got[i] != DefaultMaskRune {
+					revealed++
+				}
+			}
+			if revealed > len(tt.input)/2 && len(tt.input) > 8 {
+				t.Errorf("MaskToken(%q) reveals %d of %d chars (finding 21)", tt.input, revealed, len(tt.input))
 			}
 		})
 	}

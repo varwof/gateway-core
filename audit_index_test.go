@@ -5,7 +5,10 @@ package gw
 
 import (
 	"os"
+	"strings"
 	"testing"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestAuditIndexCreate(t *testing.T) {
@@ -437,4 +440,43 @@ func TestSearchFTS_NoMatch(t *testing.T) {
 
 func tempDB(t interface{ Name() string }) string {
 	return os.TempDir() + "/audit_index_test_" + t.Name() + ".db"
+}
+
+// TestPostingsBounded (finding 23): by_cn / by_serial / by_word postings are
+// capped so hot keys cannot grow the index without bound.
+func TestPostingsBounded(t *testing.T) {
+	path := tempDB(t)
+	defer os.Remove(path)
+	idx, err := NewAuditIndex(path)
+	if err != nil {
+		t.Fatalf("create index: %v", err)
+	}
+	defer idx.Close()
+
+	for i := 0; i < MaxPostingsPerKey+50; i++ {
+		entry := &AuditEntry{
+			Time:     "2026-07-08T10:00:00Z",
+			Action:   "test",
+			ClientCN: "hot-user",
+			Mapping:  "m",
+		}
+		if err := idx.Index(entry); err != nil {
+			t.Fatalf("index %d: %v", i, err)
+		}
+	}
+
+	err = idx.db.View(func(tx *bolt.Tx) error {
+		bc := tx.Bucket([]byte("by_cn"))
+		if got := len(splitLines(bc.Get([]byte("hot-user")))); got > MaxPostingsPerKey {
+			t.Fatalf("by_cn postings = %d, want <= %d (finding 23)", got, MaxPostingsPerKey)
+		}
+		bw := tx.Bucket([]byte("by_word"))
+		if got := len(strings.Fields(string(bw.Get([]byte("test"))))); got > MaxPostingsPerKey {
+			t.Fatalf("by_word postings = %d, want <= %d (finding 23)", got, MaxPostingsPerKey)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
