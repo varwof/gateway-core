@@ -60,6 +60,8 @@ func newPluginFromConfig(scheme string, pc *PluginConfig) (CapabilityPlugin, err
 		return newRBACPlugin(scheme, pc.Config)
 	case PluginTypeWebhook:
 		return newWebhookPlugin(scheme, pc.Config)
+	case "database":
+		return newDatabasePlugin(scheme, pc.Config)
 	default:
 		return nil, fmt.Errorf("unknown plugin type %q", pc.Type)
 	}
