@@ -64,6 +64,10 @@ func newPluginFromConfig(scheme string, pc *PluginConfig) (CapabilityPlugin, err
 		return newDatabasePlugin(scheme, pc.Config)
 	case "wallet":
 		return newWalletPlugin(scheme, pc.Config)
+	case "deploy":
+		return newDeployPlugin(scheme, pc.Config)
+	case "mcp":
+		return newMCPPlugin(scheme, pc.Config)
 	default:
 		return nil, fmt.Errorf("unknown plugin type %q", pc.Type)
 	}
