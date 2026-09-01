@@ -49,18 +49,7 @@ func (p *databasePlugin) Execute(cap *Capability, ctx *PluginContext) (*PluginRe
 			Reason: "database capability parameters malformed"}, nil
 	}
 
-	table := ""
-	if q := ctx.Query["table"]; len(q) > 0 {
-		table = q[0]
-	}
-	var cols []string
-	if q := ctx.Query["cols"]; len(q) > 0 {
-		cols = splitCSV(q[0])
-	}
-	var limit int64
-	if q := ctx.Query["limit"]; len(q) > 0 {
-		limit, _ = strconv.ParseInt(q[0], 10, 64)
-	}
+	table, cols, limit := operationFromContext(ctx)
 
 	// Table must be within the authorized set.
 	if len(bound.Tables) > 0 && !contains(bound.Tables, table) {
@@ -90,6 +79,35 @@ func (p *databasePlugin) Execute(cap *Capability, ctx *PluginContext) (*PluginRe
 
 	return &PluginResult{Decision: PluginAllow,
 		Reason: "operation within database capability boundary"}, nil
+}
+
+// operationFromContext extracts the operation (table/cols/limit) from the
+// request. It prefers a structured JSON body ("{"table":...,"cols":[...],
+// "limit":N}") and falls back to query parameters (?table=&cols=&limit=).
+func operationFromContext(ctx *PluginContext) (string, []string, int64) {
+	if len(ctx.Body) > 0 {
+		var op struct {
+			Table string   `json:"table"`
+			Cols  []string `json:"cols"`
+			Limit int64    `json:"limit"`
+		}
+		if json.Unmarshal(ctx.Body, &op) == nil && op.Table != "" {
+			return op.Table, op.Cols, op.Limit
+		}
+	}
+	table := ""
+	if q := ctx.Query["table"]; len(q) > 0 {
+		table = q[0]
+	}
+	var cols []string
+	if q := ctx.Query["cols"]; len(q) > 0 {
+		cols = splitCSV(q[0])
+	}
+	var limit int64
+	if q := ctx.Query["limit"]; len(q) > 0 {
+		limit, _ = strconv.ParseInt(q[0], 10, 64)
+	}
+	return table, cols, limit
 }
 
 func splitCSV(s string) []string {

@@ -4,7 +4,7 @@ go 1.26
 
 require (
 	github.com/varwof/pkcs7 v0.1.0
-	github.com/varwof/types v0.4.0
+	github.com/varwof/types v0.4.1
 	go.etcd.io/bbolt v1.5.0
 	golang.org/x/crypto v0.54.0
 )
@@ -15,3 +15,4 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )
+

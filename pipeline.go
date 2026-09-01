@@ -398,6 +398,7 @@ func RunAccessPipeline(chain []*x509.Certificate, cfg *PipelineConfig) *Pipeline
 				pc.Path = cfg.HTTPFacts.Path
 				pc.Query = cfg.HTTPFacts.Query
 				pc.Headers = cfg.HTTPFacts.Headers
+				pc.Body = cfg.HTTPFacts.Body
 			}
 			res, err := p.Execute(&cap, pc)
 			if err != nil {

@@ -54,3 +54,28 @@ func TestDatabasePluginEnforcesParams(t *testing.T) {
 		t.Fatalf("malformed params should deny: %+v err=%v", res, err)
 	}
 }
+
+func TestDatabasePluginBodyOperation(t *testing.T) {
+	p, _ := newDatabasePlugin("std/database-v1", nil)
+	cap := &Capability{
+		SchemeId:     "std/database-v1",
+		CapabilityId: "query:SELECT",
+		Parameters:   []byte(`{"tables":["customers"],"columns":{"customers":["id","name"]},"limit":{"max":500}}`),
+	}
+	in := &PluginContext{Body: []byte(`{"table":"customers","cols":["id","name"],"limit":100}`)}
+	res, err := p.Execute(cap, in)
+	if err != nil || res.Decision != PluginAllow {
+		t.Fatalf("in-scope body should allow: %+v err=%v", res, err)
+	}
+	out := &PluginContext{Body: []byte(`{"table":"secret","cols":["id"]}`)}
+	res, err = p.Execute(cap, out)
+	if err != nil || res.Decision != PluginDeny {
+		t.Fatalf("out-of-scope body should deny: %+v err=%v", res, err)
+	}
+	// Malformed body falls back to query params (empty -> deny for scoped cap).
+	bad := &PluginContext{Body: []byte(`{oops`)}
+	res, err = p.Execute(cap, bad)
+	if err != nil || res.Decision != PluginDeny {
+		t.Fatalf("malformed body should deny: %+v err=%v", res, err)
+	}
+}
