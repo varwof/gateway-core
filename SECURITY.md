@@ -33,10 +33,30 @@ confirmed renewal, management, audit, TSA). Issues of interest include:
 Security fixes are applied to the latest release. Older releases are
 supported on a best-effort basis.
 
-## Code Review Findings (2026-09-01)
+## Funding note: no paid third-party audit
 
-Security / correctness review of the current `main`. All items below
-are open and not yet fixed. Priority: high for items 1-5.
+This is an individual / open-source project; no paid third-party
+security audit has been conducted. Validation relies on internal
+AI-assisted review, automated tests (race-enabled), and independent
+cross-implementation exercise where available.
+
+## Security Audit History
+
+Review practice: development includes AI-assisted security review and
+RFC compliance cross-checks (PKI (RFC 5280), OCSP (RFC 6960), TSA (RFC 3161), JOSE bearer (RFC 7519/9068)). Consolidated findings are
+logged below; each is retained as a historical record after resolution.
+
+### 2026-09-01 -- internal security review (AI-assisted), resolved
+
+Method: internal security/correctness review of the current `main`,
+assisted by AI tooling, with RFC cross-checks against PKI (RFC 5280), OCSP (RFC 6960), TSA (RFC 3161), JOSE bearer (RFC 7519/9068).
+Status: all findings below were resolved in the 2026-09-01 security
+pass (commit 33194ba) and verified by the full test suite. Fixes were verified by the full test suite (race-enabled).
+
+Next scheduled review: quarterly (next: 2026-12-01).
+Independent exercise: third-party hostile testing exercised the capability plugins (2026-09).
+
+### Resolved findings (2026-09-01)
 
 ### Security (high)
 
