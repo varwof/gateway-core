@@ -67,3 +67,37 @@ func TestMCPPluginEnforcesToolAllowlist(t *testing.T) {
 		t.Fatalf("protocol method should pass: %+v err=%v", res, err)
 	}
 }
+
+func TestMCPPluginArgumentSubset(t *testing.T) {
+	// Predicate 2: allowlisted tool + argument bounds. read_file is allowed,
+	// but only under the certificate-bound path prefixes.
+	p, _ := newMCPPlugin("std/mcp-v1", nil)
+	cap := &Capability{SchemeId: "std/mcp-v1", CapabilityId: "tools:call",
+		Parameters: []byte(`{"tools":["read_file","list_dir"],
+			"tool_args":{"read_file":{"path_prefixes":["/workspace"]}}}`)}
+
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/workspace/src/a.txt"}}}`
+	res, err := p.Execute(cap, &PluginContext{Body: []byte(in)})
+	if err != nil || res.Decision != PluginAllow {
+		t.Fatalf("path under prefix should allow: %+v err=%v", res, err)
+	}
+
+	out := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/etc/shadow"}}}`
+	res, err = p.Execute(cap, &PluginContext{Body: []byte(out)})
+	if err != nil || res.Decision != PluginDeny {
+		t.Fatalf("path outside prefix must deny: %+v err=%v", res, err)
+	}
+
+	missing := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{}}}`
+	res, err = p.Execute(cap, &PluginContext{Body: []byte(missing)})
+	if err != nil || res.Decision != PluginDeny {
+		t.Fatalf("missing path with prefix bound must deny: %+v err=%v", res, err)
+	}
+
+	// Tool without per-tool args stays allowlist-only (class grant).
+	nobound := `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_dir","arguments":{"path":"/etc"}}}`
+	res, err = p.Execute(cap, &PluginContext{Body: []byte(nobound)})
+	if err != nil || res.Decision != PluginAllow {
+		t.Fatalf("list_dir (no arg bounds) should allow: %+v err=%v", res, err)
+	}
+}

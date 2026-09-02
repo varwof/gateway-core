@@ -6,6 +6,7 @@ package gw
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // mcpPlugin enforces the std/mcp-v1 capability contract at the operation
@@ -28,7 +29,10 @@ func (p *mcpPlugin) Execute(cap *Capability, ctx *PluginContext) (*PluginResult,
 			Reason: "mcp capability unconstrained (no tool allowlist)"}, nil
 	}
 	var bound struct {
-		Tools []string `json:"tools"`
+		Tools    []string `json:"tools"`
+		ToolArgs map[string]struct {
+			PathPrefixes []string `json:"path_prefixes"`
+		} `json:"tool_args"`
 	}
 	if err := json.Unmarshal(cap.Parameters, &bound); err != nil {
 		return &PluginResult{Decision: PluginDeny,
@@ -43,7 +47,8 @@ func (p *mcpPlugin) Execute(cap *Capability, ctx *PluginContext) (*PluginResult,
 	var rpc struct {
 		Method string `json:"method"`
 		Params struct {
-			Name string `json:"name"`
+			Name      string         `json:"name"`
+			Arguments map[string]any `json:"arguments"`
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(ctx.Body, &rpc); err != nil {
@@ -58,6 +63,26 @@ func (p *mcpPlugin) Execute(cap *Capability, ctx *PluginContext) (*PluginResult,
 		return &PluginResult{Decision: PluginDeny,
 			Reason: fmt.Sprintf("tool %q not in allowlist %v", rpc.Params.Name, bound.Tools)}, nil
 	}
+	// Field-level (argument) constraints, e.g. path_prefixes for read_file:
+	// the tool is allowlisted, but its arguments must stay within the
+	// certificate-bound bounds too (predicate 2, distinct from tool identity).
+	if ta, ok := bound.ToolArgs[rpc.Params.Name]; ok && len(ta.PathPrefixes) > 0 {
+		path, _ := rpc.Params.Arguments["path"].(string)
+		if path == "" || !hasAnyPrefix(path, ta.PathPrefixes) {
+			return &PluginResult{Decision: PluginDeny,
+				Reason: fmt.Sprintf("argument path %q outside allowed prefixes %v",
+					path, ta.PathPrefixes)}, nil
+		}
+	}
 	return &PluginResult{Decision: PluginAllow,
 		Reason: "tool call within mcp capability boundary"}, nil
+}
+
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, pre := range prefixes {
+		if strings.HasPrefix(s, pre) {
+			return true
+		}
+	}
+	return false
 }
