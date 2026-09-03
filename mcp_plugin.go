@@ -6,6 +6,7 @@ package gw
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"strings"
 )
 
@@ -29,7 +30,7 @@ func (p *mcpPlugin) Execute(cap *Capability, ctx *PluginContext) (*PluginResult,
 			Reason: "mcp capability unconstrained (no tool allowlist)"}, nil
 	}
 	var bound struct {
-		Tools    []string `json:"tools"`
+		Tools    *[]string `json:"tools"`
 		ToolArgs map[string]struct {
 			PathPrefixes []string `json:"path_prefixes"`
 		} `json:"tool_args"`
@@ -59,16 +60,20 @@ func (p *mcpPlugin) Execute(cap *Capability, ctx *PluginContext) (*PluginResult,
 		return &PluginResult{Decision: PluginAllow,
 			Reason: fmt.Sprintf("protocol method %q (read-only)", rpc.Method)}, nil
 	}
-	if len(bound.Tools) > 0 && rpc.Params.Name != "" && !contains(bound.Tools, rpc.Params.Name) {
+	if rpc.Params.Name == "" {
 		return &PluginResult{Decision: PluginDeny,
-			Reason: fmt.Sprintf("tool %q not in allowlist %v", rpc.Params.Name, bound.Tools)}, nil
+			Reason: "tools/call missing params.name"}, nil
+	}
+	if bound.Tools != nil && !contains(*bound.Tools, rpc.Params.Name) {
+		return &PluginResult{Decision: PluginDeny,
+			Reason: fmt.Sprintf("tool %q not in allowlist %v", rpc.Params.Name, *bound.Tools)}, nil
 	}
 	// Field-level (argument) constraints, e.g. path_prefixes for read_file:
 	// the tool is allowlisted, but its arguments must stay within the
 	// certificate-bound bounds too (predicate 2, distinct from tool identity).
 	if ta, ok := bound.ToolArgs[rpc.Params.Name]; ok && len(ta.PathPrefixes) > 0 {
 		path, _ := rpc.Params.Arguments["path"].(string)
-		if path == "" || !hasAnyPrefix(path, ta.PathPrefixes) {
+		if path == "" || !hasAnyPathPrefix(path, ta.PathPrefixes) {
 			return &PluginResult{Decision: PluginDeny,
 				Reason: fmt.Sprintf("argument path %q outside allowed prefixes %v",
 					path, ta.PathPrefixes)}, nil
@@ -78,9 +83,17 @@ func (p *mcpPlugin) Execute(cap *Capability, ctx *PluginContext) (*PluginResult,
 		Reason: "tool call within mcp capability boundary"}, nil
 }
 
-func hasAnyPrefix(s string, prefixes []string) bool {
+func hasAnyPathPrefix(s string, prefixes []string) bool {
+	cleanedPath := path.Clean(s)
 	for _, pre := range prefixes {
-		if strings.HasPrefix(s, pre) {
+		if pre == "" {
+			continue
+		}
+		cleanedPrefix := path.Clean(pre)
+		if cleanedPrefix == "/" && strings.HasPrefix(cleanedPath, "/") {
+			return true
+		}
+		if cleanedPath == cleanedPrefix || strings.HasPrefix(cleanedPath, cleanedPrefix+"/") {
 			return true
 		}
 	}
