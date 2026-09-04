@@ -5,8 +5,10 @@ package gw
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -285,6 +287,23 @@ func AutoIssueCert(cfg *IssueConfig, cn, san string) (*AutoIssueResult, error) {
 	}, nil
 }
 
+// renewalJitter returns a random duration in [0, max) drawn from crypto/rand.
+// Used to de-synchronize short-lived certificate renewals across multiple
+// gateway instances so they do not form a thundering herd on the CA. crypto/rand
+// keeps timing unguessable (predictable jitter would let an observer anticipate
+// when a fresh certificate is issued). Returns 0 if the draw fails.
+func renewalJitter(max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return 0
+	}
+	n := binary.BigEndian.Uint64(buf[:])
+	return time.Duration(n % uint64(max))
+}
+
 // RenewalLoop periodically checks and automatically renews short-lived certificates.
 func RenewalLoop(cfg *IssueConfig, cn, san string, certFile, keyFile string, renewWindow, checkInterval time.Duration, stopCh <-chan struct{}, onRenew func()) {
 	if renewWindow <= 0 {
@@ -296,6 +315,14 @@ func RenewalLoop(cfg *IssueConfig, cn, san string, certFile, keyFile string, ren
 
 	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()
+
+	// Stagger the first check so co-deployed instances do not all probe the CA at
+	// once; subsequent renewals also apply jitter (see below).
+	select {
+	case <-stopCh:
+		return
+	case <-time.After(renewalJitter(checkInterval)):
+	}
 
 	loadCert := func() *x509.Certificate {
 		data, err := os.ReadFile(certFile)
@@ -330,11 +357,17 @@ func RenewalLoop(cfg *IssueConfig, cn, san string, certFile, keyFile string, ren
 				Validity: 10,
 				Profile:  "tls-server",
 			}
+			// Jitter the issue call so concurrent instances entering the renewal
+			// window together do not hammer the CA at the same tick (thundering herd).
+			select {
+			case <-stopCh:
+				return
+			case <-time.After(renewalJitter(checkInterval)):
+			}
 			result, err := client.Issue(req)
 			if err != nil {
 				continue
 			}
-
 			if err := os.WriteFile(certFile, []byte(result.CertPEM), 0644); err != nil {
 				continue
 			}
