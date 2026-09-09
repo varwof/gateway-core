@@ -1,0 +1,18 @@
+{
+  "agentId": "sm2-golden-agent-001",
+  "capabilityAction": "connect:tls",
+  "capabilityScheme": "varwof-gateway-v1",
+  "daReasonCode": "SM2_GOLDEN",
+  "data": "gateway-core golden SM2 payload",
+  "delegationMode": 0,
+  "hasAIC": true,
+  "intermediateCN": "SM2 Golden Intermediate CA",
+  "issuerCN": "SM2 Golden Intermediate CA",
+  "leafCN": "sm2-golden-agent.example.com",
+  "leafSerialHex": "0988B11A5ED72FF5AD96605BC2FD71DAC4964DE8",
+  "principalId": "principal-sm2-golden",
+  "principalRealm": "varwof",
+  "rootCN": "SM2 Golden Root CA",
+  "signatureAlgOID": "1.2.156.10197.1.501",
+  "sm2Curve": true
+}
