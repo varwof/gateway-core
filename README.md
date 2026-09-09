@@ -50,6 +50,24 @@ go get github.com/varwof/gateway-core@v0.1.0
 | Metrics | Prometheus Counter/Gauge/Histogram |
 | Unified Pipeline | CRL → OCSP → RBAC → AIC → constraints → plugins |
 | Policy Versioning | Monotonic version + history + branch control |
+| ACPs AAC Profile | Opt-in experiment: `acps` package + `RunAccessPipelineAAC` (AIC/AAC/AIP v0 slice) |
+
+## ACPs AAC Profile (experimental)
+
+An opt-in enforcement layer for the ACPs v2.2.0 authorization model:
+
+- `acps` — self-contained package (AIC grammar + CRC-16 checksum, delegation-token
+  trust/boundary rules, trusted-context providers, fail-closed PDP, AAC/AIP errors).
+- `pipeline_aac.go` — `RunAccessPipelineAAC(chain, cfg, aac, req)`: when the AAC
+  profile is disabled it degenerates to `RunAccessPipeline` exactly (default
+  behavior unchanged). When enabled it adds identity binding (AIP §6.0),
+  trusted-context construction, audience/chain/replay checks and the fail-closed
+  PDP decision before any business processing, then records the authorization
+  audit (AAC §13).
+
+Docs: `docs/acps/ACPs-v02.2-requirements.md` (baseline),
+`docs/acps/aac-to-gateway-core-mapping.md` (component mapping),
+`docs/acps/conformance-matrix.md` (clause-by-clause status).
 
 ## Ecosystem
 
