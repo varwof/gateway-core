@@ -6,6 +6,7 @@ package gw
 import (
 	"crypto/x509"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -225,14 +226,18 @@ func RunAccessPipeline(chain []*x509.Certificate, cfg *PipelineConfig) *Pipeline
 		if err != nil {
 			return deny(fmt.Sprintf("invalid spiffe id: %v", err))
 		}
-		if cfg.SPIFFETrustDomain != "" && sid.TrustDomain != cfg.SPIFFETrustDomain {
+		if cfg.SPIFFETrustDomain != "" && sid.TrustDomain != strings.ToLower(cfg.SPIFFETrustDomain) {
 			return deny(fmt.Sprintf("spiffe trust domain mismatch: have %s, want %s",
 				sid.TrustDomain, cfg.SPIFFETrustDomain))
 		}
 		if len(cfg.AllowedSPIFFEIDs) > 0 {
+			// Trust domains are case-insensitive (RFC 7555), so compare in a
+			// canonical form that lowercases the trust domain only; a
+			// case-variant of a trusted ID must not slip past the allowlist.
 			allowed := false
+			cand := canonicalSPIFFEID(spiffeID)
 			for _, id := range cfg.AllowedSPIFFEIDs {
-				if id == spiffeID {
+				if canonicalSPIFFEID(id) == cand {
 					allowed = true
 					break
 				}
