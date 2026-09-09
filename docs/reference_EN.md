@@ -38,7 +38,7 @@ gateway-core is a pure-Go shared security engine library that provides unified s
 5. AIC parsing                      (Agent Identity Certificate)
 6. GatewaySession                   (session constraints)
 7. Capability intersection check    (AIC.Capabilities ∩ PA.Grants)
-8. Delegation authorization verification (DelegationAuthorization signature)
+8. Delegation authorization verification (DelegationAuthorization signature, DA v1/v2 dual-format)
 9. GS CIDR check                    (IP allowlist)
 10. Plugin execution                (Capability Plugin Registry)
 → Returns PipelineResult (Granted/Denied)

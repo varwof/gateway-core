@@ -570,7 +570,7 @@ func CheckAdmission(cert *x509.Certificate, cfg AdmissionConfig) AdmissionResult
 				}
 			}
 		}
-		if err := VerifyDelegationAuth(aic, userCert); err != nil {
+		if err := VerifyDelegationAuth(aic, userCert, cert); err != nil {
 			return AdmissionResult{
 				Decision: DecisionDeny,
 				Reason:   fmt.Sprintf("user_auth: %v", err),
@@ -667,9 +667,11 @@ func effectiveCapabilities(declared []Capability, grants []string) []Capability 
 }
 
 // VerifyDelegationAuth verifies the validity of a DelegationAuthorization signature.
-// aic must contain a non-empty DelegationAuthorization; userCert is the authorizing user's certificate.
-// The signed content is the DelegationAuthTBS DER encoding (a specific subset, not the entire AIC).
-func VerifyDelegationAuth(aic *AIC, userCert *x509.Certificate) error {
+// aic must contain a non-empty DelegationAuthorization; userCert is the authorizing
+// user's certificate; agentCert is the certificate carrying the AIC, whose SPKI the
+// DA version 2 agentKeyBinding covers. The signed content is the DelegationAuthTBS DER
+// encoding (a specific subset, not the entire AIC).
+func VerifyDelegationAuth(aic *AIC, userCert *x509.Certificate, agentCert *x509.Certificate) error {
 	if aic == nil {
 		return fmt.Errorf("verify_user_auth: nil aic")
 	}
@@ -681,9 +683,63 @@ func VerifyDelegationAuth(aic *AIC, userCert *x509.Certificate) error {
 		return fmt.Errorf("verify_user_auth: empty signature")
 	}
 
+	var agentSPKI []byte
+	if agentCert != nil && agentCert.PublicKey != nil {
+		spki, err := x509.MarshalPKIXPublicKey(agentCert.PublicKey)
+		if err != nil {
+			return fmt.Errorf("verify_user_auth: marshal agent SPKI: %w", err)
+		}
+		agentSPKI = spki
+	}
+
+	// DA version negotiation mirrors core/internal/ca: version 0 (unspecified)
+	// prefers version 2 when the agent SPKI is available, then falls back to v1;
+	// version 1 uses the legacy DER; version 2 requires a non-empty agent SPKI.
+	version := aic.Version
+	switch version {
+	case 0:
+		if len(agentSPKI) > 0 {
+			if err := verifyDelegationAuthTBS(aic, userCert, agentSPKI, pki.DAVersion2); err == nil {
+				return nil
+			}
+		}
+		return verifyDelegationAuthTBS(aic, userCert, agentSPKI, pki.DAVersion1)
+	case pki.DAVersion1:
+		return verifyDelegationAuthTBS(aic, userCert, agentSPKI, pki.DAVersion1)
+	case pki.DAVersion2:
+		if len(agentSPKI) == 0 {
+			return fmt.Errorf("verify_user_auth: DA version 2 requires the agent certificate (agent SPKI binding)")
+		}
+		return verifyDelegationAuthTBS(aic, userCert, agentSPKI, pki.DAVersion2)
+	default:
+		return fmt.Errorf("verify_user_auth: unsupported DA version %d (must be 0, 1, or 2)", version)
+	}
+}
+
+// verifyDelegationAuthTBS dispatches on the effective DA version. Version 2
+// appends the agentKeyBinding over the agent SPKI; version 1 accepts both the
+// explicit v1 encoding (Version INTEGER 1) and the legacy encoding (Version
+// INTEGER 0 emitted by pre-v2 signers), since the ASN.1 default:1 tag does not
+// collapse the two on marshal.
+func verifyDelegationAuthTBS(aic *AIC, userCert *x509.Certificate, agentSPKI []byte, version int) error {
+	if version == pki.DAVersion2 {
+		return verifyDelegationAuthTBSAt(aic, userCert, agentSPKI, pki.DAVersion2)
+	}
+	if err := verifyDelegationAuthTBSAt(aic, userCert, agentSPKI, pki.DAVersion1); err == nil {
+		return nil
+	}
+	return verifyDelegationAuthTBSAt(aic, userCert, agentSPKI, 0)
+}
+
+// verifyDelegationAuthTBSAt reconstructs the DelegationAuthTBS at the given DA
+// version, hashes its DER encoding and verifies the signature against the user
+// certificate's public key, with the SPKI hash cross-check.
+func verifyDelegationAuthTBSAt(aic *AIC, userCert *x509.Certificate, agentSPKI []byte, version int) error {
+	ua := aic.DelegationAuthorization
+
 	// Construct DelegationAuthTBS for signature verification (spec §6 DelegationAuthTBS)
 	tbs := DelegationAuthTBS{
-		Version:                  aic.Version,
+		Version:                  version,
 		AgentId:                  aic.AgentId,
 		PrincipalUid:             aic.PrincipalUid,
 		Reason:                   ua.Reason,
@@ -693,6 +749,13 @@ func VerifyDelegationAuth(aic *AIC, userCert *x509.Certificate) error {
 		RequestedLifetime:        ua.RequestedLifetime,
 		Timestamp:                ua.Timestamp,
 		Nonce:                    ua.Nonce,
+	}
+	if version == pki.DAVersion2 {
+		binding, err := pki.MakeAgentKeyBinding(nil, agentSPKI)
+		if err != nil {
+			return fmt.Errorf("verify_user_auth: agent key binding: %w", err)
+		}
+		tbs.AgentKeyBinding = binding
 	}
 	tbsDER, err := asn1.Marshal(tbs)
 	if err != nil {
@@ -811,7 +874,7 @@ func (v *DelegationChainVerifier) Verify(chain []*x509.Certificate, topPrincipal
 		}
 
 		// This level's AIC.DA signer should be signer (SPKI hash cross-validation + signature verification)
-		if err := VerifyDelegationAuth(aic, signer); err != nil {
+		if err := VerifyDelegationAuth(aic, signer, cert); err != nil {
 			return fmt.Errorf("delegation_chain level %d (%s): %w", i, cert.Subject.CommonName, err)
 		}
 	}

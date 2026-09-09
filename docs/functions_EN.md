@@ -94,7 +94,7 @@ func (u *UserPermission) PermIds() []string
 ```go
 func CheckAdmission(cert *x509.Certificate, cfg AdmissionConfig) AdmissionResult
 func (c AdmissionConfig) Validate() error
-func VerifyDelegationAuth(aic *AIC, userCert *x509.Certificate) error
+func VerifyDelegationAuth(aic *AIC, userCert *x509.Certificate, agentCert *x509.Certificate) error
 func CheckDAFreshness(ts time.Time, now time.Time, maxAge time.Duration) error // P1-B-13: DA timestamp freshness check (|now-ts| ≤ maxAge; ≤0 uses the default 30s)
 func NeedRevoke(cert *x509.Certificate) bool
 func HasDelegatedAgentOU(cert *x509.Certificate) bool

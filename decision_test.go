@@ -870,7 +870,7 @@ func TestCheckDelegatedAgentCert_Expired(t *testing.T) {
 }
 
 func TestVerifyDelegationAuth_NilAIC(t *testing.T) {
-	err := VerifyDelegationAuth(nil, &x509.Certificate{Raw: []byte("cert")})
+	err := VerifyDelegationAuth(nil, &x509.Certificate{Raw: []byte("cert")}, nil)
 	if err == nil {
 		t.Fatal("expected error for nil AIC")
 	}
@@ -878,7 +878,7 @@ func TestVerifyDelegationAuth_NilAIC(t *testing.T) {
 
 func TestVerifyDelegationAuth_NilUserCert(t *testing.T) {
 	aic := &AIC{DelegationAuthorization: DelegationAuthorization{Reason: Reason{ReasonCode: "TEST", Description: "test"}, SignatureValue: []byte("sig")}}
-	err := VerifyDelegationAuth(aic, nil)
+	err := VerifyDelegationAuth(aic, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for nil user cert")
 	}
@@ -886,7 +886,7 @@ func TestVerifyDelegationAuth_NilUserCert(t *testing.T) {
 
 func TestVerifyDelegationAuth_EmptySignature(t *testing.T) {
 	aic := &AIC{DelegationAuthorization: DelegationAuthorization{Reason: Reason{ReasonCode: "TEST", Description: "test"}}}
-	err := VerifyDelegationAuth(aic, &x509.Certificate{Raw: []byte("cert")})
+	err := VerifyDelegationAuth(aic, &x509.Certificate{Raw: []byte("cert")}, nil)
 	if err == nil {
 		t.Fatal("expected error for empty signature")
 	}
@@ -901,7 +901,7 @@ func TestVerifyDelegationAuth_HashMismatch(t *testing.T) {
 			SignatureAlgorithm: AlgorithmIdentifier{Algorithm: OIDSigECDSAWithSHA256},
 		},
 	}
-	err := VerifyDelegationAuth(aic, userCert)
+	err := VerifyDelegationAuth(aic, userCert, nil)
 	if err == nil {
 		t.Fatal("expected error for hash mismatch")
 	}
@@ -965,7 +965,7 @@ func TestVerifyDelegationAuth_ECDSA_Success(t *testing.T) {
 		SignatureAlgorithm: AlgorithmIdentifier{Algorithm: OIDSigECDSAWithSHA256},
 		SignatureValue:     sig,
 	}
-	err = VerifyDelegationAuth(&aic, userCert)
+	err = VerifyDelegationAuth(&aic, userCert, nil)
 	if err != nil {
 		t.Fatalf("expected success, got: %v", err)
 	}
@@ -1006,7 +1006,7 @@ func TestVerifyDelegationAuth_ECDSA_Expired(t *testing.T) {
 		},
 	}
 	// Gateway does not check Timestamp + Lifetime (only CA verifies at issuance), signature valid is sufficient
-	err = VerifyDelegationAuth(&aic, userCert)
+	err = VerifyDelegationAuth(&aic, userCert, nil)
 	if err != nil {
 		t.Fatalf("expected success (gateway does not enforce lifetime), got: %v", err)
 	}
@@ -1048,7 +1048,7 @@ func TestVerifyDelegationAuth_SPKIHashMismatch(t *testing.T) {
 		},
 	}
 	// Signature is correct, but PrincipalUid.KeyHash does not match userCert's SPKI -> should deny
-	err = VerifyDelegationAuth(&aic, userCert)
+	err = VerifyDelegationAuth(&aic, userCert, nil)
 	if err == nil {
 		t.Fatal("expected SPKI hash mismatch error")
 	}
@@ -1090,7 +1090,7 @@ func TestVerifyDelegationAuth_ECDSA_Failure(t *testing.T) {
 	}
 	// Tamper with AIC content (causes TBS constructed during verification to differ from signing time)
 	aic.AgentId = "tampered-agent"
-	err = VerifyDelegationAuth(&aic, userCert)
+	err = VerifyDelegationAuth(&aic, userCert, nil)
 	if err == nil {
 		t.Fatal("expected error for tampered AIC")
 	}
@@ -1384,7 +1384,7 @@ func TestVerifyDelegationAuth_UnsupportedKeyType(t *testing.T) {
 			SignatureAlgorithm: AlgorithmIdentifier{Algorithm: OIDSigECDSAWithSHA256},
 		},
 	}
-	err := VerifyDelegationAuth(aic, cert)
+	err := VerifyDelegationAuth(aic, cert, nil)
 	if err == nil {
 		t.Fatal("expected error for unsupported key type (nil key)")
 	}

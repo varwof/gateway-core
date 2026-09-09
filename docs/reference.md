@@ -37,7 +37,7 @@ gateway-core 是纯 Go 共享安全引擎库，为三网关（TCP/HTTP/UDP）提
 5. AIC 解析          (Agent Identity Certificate)
 6. GatewaySession    (会话约束)
 7. 能力交集检查       (AIC.Capabilities ∩ PA.Grants)
-8. 委托授权验证       (DelegationAuthorization 签名)
+8. 委托授权验证       (DelegationAuthorization 签名，DA v1/v2 双格式)
 9. GS CIDR 检查      (IP 白名单)
 10. 插件执行          (Capability Plugin Registry)
 → 返回 PipelineResult (Granted/Denied)
