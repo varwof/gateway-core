@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -244,4 +245,86 @@ func TestRunAccessPipelineAAC_AuditLoggerDrain(t *testing.T) {
 	if !strings.Contains(text, `"decision":"allow"`) || !strings.Contains(text, "\"level\":\"INFO\"") {
 		t.Fatalf("audit log missing allow/INFO entry:\n%s", text)
 	}
+}
+
+func TestReplayGuard_BoundedAndOneTimeUse(t *testing.T) {
+	g := NewReplayGuardLimited(3, time.Hour)
+	if !g.FirstUse("a") || !g.FirstUse("b") || !g.FirstUse("c") {
+		t.Fatal("fresh jti must be accepted")
+	}
+	if g.FirstUse("a") {
+		t.Fatal("second use of a jti must be refused (one-time-use)")
+	}
+	if g.Len() > 3 {
+		t.Fatalf("guard exceeded capacity: %d", g.Len())
+	}
+	for i := 0; i < 1000; i++ {
+		g.FirstUse("gen-" + strconv.Itoa(i))
+	}
+	if g.Len() > 3 {
+		t.Fatalf("guard unbounded after pressure: %d", g.Len())
+	}
+}
+
+func TestReplayGuard_TTLPurgeKeepsOneTimeUse(t *testing.T) {
+	g := NewReplayGuardLimited(10, time.Hour)
+	past := time.Now().Add(-2 * time.Hour)
+	g.now = func() time.Time { return past }
+	if !g.FirstUse("stale") {
+		t.Fatal("fresh jti must be accepted")
+	}
+	g.now = func() time.Time { return time.Now() }
+	if g.FirstUse("stale") {
+		t.Fatal("used jti must stay refused after TTL")
+	}
+}
+
+func TestReplayGuard_DefaultsBounded(t *testing.T) {
+	g := NewReplayGuard()
+	if g.maxEntries != DefaultReplayMaxEntries || g.ttl != DefaultReplayTTL {
+		t.Fatalf("defaults = %d/%v", g.maxEntries, g.ttl)
+	}
+	g2 := NewReplayGuardLimited(0, 0)
+	if g2.maxEntries != DefaultReplayMaxEntries || g2.ttl != DefaultReplayTTL {
+		t.Fatalf("fallback defaults = %d/%v", g2.maxEntries, g2.ttl)
+	}
+}
+
+func TestAACProfile_ValidateWarnings(t *testing.T) {
+	cfg := &AACProfileConfig{Enabled: true}
+	if ws := cfg.Validate(); len(ws) != 5 {
+		t.Fatalf("warnings = %d (%v), want 5 off-by-default controls surfaced", len(ws), ws)
+	}
+	cfg2 := &AACProfileConfig{Enabled: true, AICSalt: []byte{0x12, 0x34}, MaxChainDepth: 3, ReplayGuard: NewReplayGuard(), NonceCache: NewNonceCache()}
+	if got := cfg2.Validate(); len(got) != 1 {
+		t.Fatalf("warnings = %d (%v), want only the obligations notice", len(got), got)
+	}
+}
+
+func TestRunAccessPipelineAAC_ConfigWarnOnce(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewAuditLogger(filepath.Join(dir, "audit.log"), nil, 1<<20, 2)
+	if err != nil {
+		t.Fatalf("NewAuditLogger: %v", err)
+	}
+	cert := aacTestCert(t, aacTestAIC, aacTestAIC)
+	cfg := &AACProfileConfig{Enabled: true, Policy: aacAllowAll(acps.Allow())}
+	pc := &PipelineConfig{AuditLogger: logger}
+	res := RunAccessPipelineAAC([]*x509.Certificate{cert}, pc, cfg, aacReq("task.start", nil, ""))
+	if !res.Granted {
+		t.Fatalf("allow decision denied: %+v", res)
+	}
+	res2 := RunAccessPipelineAAC([]*x509.Certificate{cert}, pc, cfg, aacReq("task.start", nil, ""))
+	if !res2.Granted {
+		t.Fatalf("second allow decision denied: %+v", res2)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "audit.log"))
+	text := string(data)
+	if n := strings.Count(text, `"action":"aac_config_warning"`); n != 5 {
+		t.Fatalf("config warnings logged %d times, want exactly 5 once:\n%s", n, text)
+	}
+	t.Logf("surfaced warnings:\n%s", text)
 }

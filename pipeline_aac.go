@@ -17,6 +17,7 @@ package gw
 import (
 	"crypto/x509"
 	"sync"
+	"time"
 
 	"github.com/varwof/gateway-core/acps"
 )
@@ -26,17 +27,50 @@ import (
 // same nonce (transport retransmission on the DA path); a one-time-use jti must
 // be refused on ANY second use, so the AAC wrapper keeps this dedicated guard
 // and uses NonceCache as an additional cross-certificate check.
+//
+// The guard is bounded: entries are one-time-use and never resurrected, but
+// stale entries are purged when the guard reaches capacity so memory does not
+// grow without bound. It is still a single-process guard — sharing replay state
+// across nodes requires an external store (v0 out of scope, see wiring-matrix).
 type ReplayGuard struct {
-	mu   sync.Mutex
-	seen map[string]struct{}
+	mu         sync.Mutex
+	seen       map[string]time.Time
+	maxEntries int
+	ttl        time.Duration
+	now        func() time.Time
 }
 
-// NewReplayGuard creates an empty one-time-use guard.
+// Defaults keep NewReplayGuard() safe for long-running processes.
+const (
+	DefaultReplayMaxEntries = 1_000_000
+	DefaultReplayTTL        = 24 * time.Hour
+)
+
+// NewReplayGuard creates a bounded one-time-use guard with default limits.
 func NewReplayGuard() *ReplayGuard {
-	return &ReplayGuard{seen: make(map[string]struct{})}
+	return NewReplayGuardLimited(DefaultReplayMaxEntries, DefaultReplayTTL)
+}
+
+// NewReplayGuardLimited creates a one-time-use guard capped at maxEntries
+// (stale entries purged at capacity) with the given entry TTL for eviction.
+// maxEntries <= 0 or ttl <= 0 fall back to the defaults.
+func NewReplayGuardLimited(maxEntries int, ttl time.Duration) *ReplayGuard {
+	if maxEntries <= 0 {
+		maxEntries = DefaultReplayMaxEntries
+	}
+	if ttl <= 0 {
+		ttl = DefaultReplayTTL
+	}
+	return &ReplayGuard{
+		seen:       make(map[string]time.Time, 0),
+		maxEntries: maxEntries,
+		ttl:        ttl,
+		now:        time.Now,
+	}
 }
 
 // FirstUse records jti and reports false when it was already used (by anyone).
+// A used jti is never resurrected, even after its TTL passes.
 func (g *ReplayGuard) FirstUse(jti string) bool {
 	if g == nil || jti == "" {
 		return false
@@ -46,8 +80,99 @@ func (g *ReplayGuard) FirstUse(jti string) bool {
 	if _, ok := g.seen[jti]; ok {
 		return false
 	}
-	g.seen[jti] = struct{}{}
+	now := g.now()
+	if len(g.seen) >= g.maxEntries {
+		g.purgeExpiredLocked(now)
+	}
+	if len(g.seen) >= g.maxEntries {
+		// Still at capacity: drop an arbitrary stale entry to remain bounded.
+		for k := range g.seen {
+			delete(g.seen, k)
+			break
+		}
+	}
+	g.seen[jti] = now.Add(g.ttl)
 	return true
+}
+
+// Len is the number of recorded jti entries (test/observability helper).
+func (g *ReplayGuard) Len() int {
+	if g == nil {
+		return 0
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.seen)
+}
+
+func (g *ReplayGuard) purgeExpiredLocked(now time.Time) {
+	for k, exp := range g.seen {
+		if !exp.After(now) {
+			delete(g.seen, k)
+		}
+	}
+}
+
+// AAC slice observability. Label keys are stable for Prometheus consumption:
+// aac_decision_total{decision=allow|deny, reason=<internal reason or "allow">}.
+var (
+	MetricAACDecisionsTotal = NewMetricCounter("aac_decision_total", "AAC authorization decisions", "decision", "reason")
+	MetricAACDecisionDur    = NewMetricHistogram("aac_decision_duration_ms", "AAC decision duration in milliseconds", []string{}, 0.1, 1, 5, 25, 100, 500)
+)
+
+func init() {
+	RegisterCounter(MetricAACDecisionsTotal)
+	RegisterHistogram(MetricAACDecisionDur)
+}
+
+// aacWarned de-duplicates per-config config-warning emission (first run only).
+var aacWarned sync.Map // *AACProfileConfig -> struct{}
+
+// Validate returns operator-facing warnings for AAC profile controls that are
+// off by default and therefore weaker than they may look. It never blocks a
+// decision: structural-only checksum, unlimited chain depth and disabled
+// one-time-use replay are valid opt-in v0 configurations (see
+// docs/acps/wiring-matrix.md "安全默认与显式配置").
+func (aac *AACProfileConfig) Validate() []string {
+	if aac == nil {
+		return nil
+	}
+	var ws []string
+	if len(aac.AICSalt) == 0 {
+		ws = append(ws, "AIC checksum: salt unset, only structural validation runs (AIC §4.2)")
+	}
+	if aac.MaxChainDepth <= 0 {
+		ws = append(ws, "delegation chain depth: unlimited (set MaxChainDepth to cap, AAC §9.4(5))")
+	}
+	if aac.ReplayGuard == nil {
+		ws = append(ws, "one-time-use jti replay: disabled (set ReplayGuard, AAC §14.3(2))")
+	}
+	if aac.NonceCache == nil {
+		ws = append(ws, "cross-certificate jti replay: disabled (set NonceCache)")
+	}
+	if len(aac.ObligationEvaluators) == 0 {
+		ws = append(ws, "obligations: none configured (AAC §6.6)")
+	}
+	return ws
+}
+
+// warnOnce surfaces config warnings at most once per profile, at INFO level on
+// the pipeline audit logger, so a weak default is never silent.
+func (aac *AACProfileConfig) warnOnce(cfg *PipelineConfig) {
+	if aac == nil || cfg == nil || cfg.AuditLogger == nil {
+		return
+	}
+	if _, loaded := aacWarned.LoadOrStore(aac, struct{}{}); loaded {
+		return
+	}
+	for _, w := range aac.Validate() {
+		cfg.AuditLogger.Log(AuditEntry{
+			Action:     "aac_config_warning",
+			Decision:   "none",
+			DenyReason: w,
+			Level:      "INFO",
+		})
+	}
 }
 
 // AACRequest carries the per-request facts the AAC profile needs beyond the
@@ -119,10 +244,18 @@ func RunAccessPipelineAAC(chain []*x509.Certificate, cfg *PipelineConfig, aac *A
 	if aac == nil || !aac.Enabled {
 		return res
 	}
+	aac.warnOnce(cfg)
 	clientCert := chain[0]
+	start := time.Now()
+
+	record := func(decision, reason string) {
+		MetricAACDecisionsTotal.Inc(decision, reason)
+		MetricAACDecisionDur.Observe(float64(time.Since(start).Nanoseconds()) / 1e6)
+	}
 
 	fail := func(code int, reason string) *PipelineResult {
 		aac.emitAudit(cfg, clientCert, req, code, reason)
+		record("deny", reason)
 		return deny(aacPublicMessage(code))
 	}
 
@@ -198,6 +331,7 @@ func RunAccessPipelineAAC(chain []*x509.Certificate, cfg *PipelineConfig, aac *A
 	if !dec.Allowed {
 		return fail(acps.CodeAuthorizationFailed, dec.ReasonCode)
 	}
+	record("allow", "allow")
 	return res
 }
 
@@ -216,11 +350,15 @@ func aacPublicMessage(code int) string {
 // emitAudit records an authorization decision at WARN with the internal reason
 // code and never the token / chain details (AAC §13).
 func (aac *AACProfileConfig) emitAudit(cfg *PipelineConfig, cert *x509.Certificate, req *AACRequest, code int, reason string) {
+	providers := []string{"mtls"}
+	if req != nil && req.Bearer != nil {
+		providers = append(providers, "delegation:token")
+	}
 	rec := acps.AuditRecord{
 		Event:      "authorization_decision",
 		Decision:   "deny",
 		ReasonCode: reason,
-		Providers:  nil,
+		Providers:  providers,
 		HighRisk:   acps.HighRiskReasons[reason],
 	}
 	if req != nil {
@@ -270,13 +408,15 @@ func (aac *AACProfileConfig) sink(cfg *PipelineConfig, cert *x509.Certificate, p
 			ClientCN:     cert.Subject.CommonName,
 			AgentId:      peerAIC,
 			PrincipalUid: rec.PrimarySubject,
-			Roles:        nil,
+			Roles:        nil, // acps carriers no RBAC role concept; adjudication is capability-based (§8.3)
 			Capabilities: aacRoleScopes(rec),
 		})
 	}
 }
 
-// aacRoleScopes extracts the subject scopes for the audit entry.
+// aacRoleScopes extracts the AIP capability scopes proven by the decision. The
+// AAC envelope authorizes exactly one skill per request (AAC §6.6), so the
+// scope set is a single acps.skill.invoke:<skill> entry.
 func aacRoleScopes(rec acps.AuditRecord) []string {
 	if rec.Resource.SkillId != "" {
 		return []string{"acps.skill.invoke:" + rec.Resource.SkillId}
