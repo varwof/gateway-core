@@ -1,7 +1,7 @@
 # ACPs v2.2.0 → gateway-core 一致性矩阵
 
-锚点：ACPs-community tag **v2.2.0**（commit `3985c1330209f075c124669cc9d31f0e75448140`）。
-实现：`acps` 包 + `pipeline_aac.go`（gw 包）的 **v0 实验切片**。
+锚点：ACPs-community tag **v2.2.0**（commit `3985c1330209f075c124669cc9d31f0e75448140`；规范与参考实现仓库：https://github.com/AIP-PUB/ACPs-community ）。
+实现：`acps` 包 + `pipeline_aac.go`（gw 包）的 **v0 实验切片**。快速验证入口见 `docs/acps/README.md`。
 状态：✅ 已实现并测试 · 🟡 部分实现（v0 边界内） · ⛔ 不在 v0（fail closed / 预留接口）。
 
 > **⚠️ 语义区分**：本矩阵的 ✅ 表示「已实现并测试」（**库级**），**不代表已进入运行路径**——例如 `BindToPresenter`/`VerifyDelegation` 在此为 ✅，但 `pipeline_aac.go` 并未调用。哪项能力在非测试代码里被谁消费，见 **`wiring-matrix.md`（接线矩阵）**。

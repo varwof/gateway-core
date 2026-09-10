@@ -1,7 +1,7 @@
 # ACPs v2.2.0 → gateway-core 接线矩阵
 
-锚点：ACPs-community tag **v2.2.0**（commit `3985c1330209f075c124669cc9d31f0e75448140`）。
-切片：`acps` 包 + `pipeline_aac.go`（gw 包）的 **v0 实验切片**。
+锚点：ACPs-community tag **v2.2.0**（commit `3985c1330209f075c124669cc9d31f0e75448140`；规范与参考实现仓库：https://github.com/AIP-PUB/ACPs-community ）。
+切片：`acps` 包 + `pipeline_aac.go`（gw 包）的 **v0 实验切片**。快速验证入口见 `docs/acps/README.md`。
 
 ## 与一致性矩阵的关系（先读这段）
 

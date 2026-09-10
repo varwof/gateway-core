@@ -4,7 +4,8 @@
 > （v0 纵向切片）。每条要求给出规范定位（manifest + 章节/行号）与本实现的处理方式，供
 > 代码审查与 conformance-matrix 追溯使用。
 >
-> - 规范基线 tag：`ACPs-community v2.2.0`，commit `3985c1330209f075c124669cc9d31f0e75448140`
+> - 规范基线：`ACPs-community v2.2.0`，commit `3985c1330209f075c124669cc9d31f0e75448140`（仓库：https://github.com/AIP-PUB/ACPs-community ）
+> - 快速验证入口：`docs/acps/README.md`（`go test ./acps/`、`go run ./cmd/acps-smoke`）
 > - 本文件只 **转述** 规范语义，不复制规范正文；代码中只引用条款号（见各实现文件头注释）。
 
 ## 1. 范围
