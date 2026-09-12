@@ -306,6 +306,15 @@ type timeWindowParams struct {
 // timeWindowEvaluator implements the time-window constraint: the evaluation time must fall
 // within the [start, end) window. The window is interpreted in the timezone specified by tz,
 // supporting cross-midnight windows (start > end treated as spanning days).
+//
+// Boundary note: the object form {"start":...,"end":...,"tz":...} with start > end is a
+// host-level extension of the gateway-core runtime (scheme namespaces "constraint" /
+// "constraint-v1"). It is intentionally kept for backward compatibility. The CLC core
+// value grammar (varwof/constraint-v1 `time:window`, rev CLC-1.3 §8.1) requires the
+// array-of-segments form and forbids a single segment crossing midnight: there the same
+// write is `invalid_constraint` and must be split (`22:00→00:00` + `00:00→06:00`). This
+// runs when the capability carries the object form under these schemes and is NOT a core
+// conformance claim — normalize to the split form for varwof/constraint-v1 inputs.
 type timeWindowEvaluator struct{}
 
 // CapabilityId returns the capability scheme ID for this constraint.

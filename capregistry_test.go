@@ -34,7 +34,7 @@ func TestPipelineCapRegistryRejectsUnregistered(t *testing.T) {
 	aic := AIC{
 		AgentId:      "agent-1",
 		PrincipalUid: PrincipalUid{KeyHash: make([]byte, 32), Version: 1, Realm: "varwof", Identifier: "user@varwof.com"},
-		Capabilities: []Capability{{SchemeId: "varwof/core", CapabilityId: "no:such"}},
+		Capabilities: []Capability{{SchemeId: "varwof/core-v1", CapabilityId: "no:such"}},
 		DelegationAuthorization: DelegationAuthorization{Reason: Reason{ReasonCode: "TEST", Description: "test"},
 			Nonce:              make([]byte, 32),
 			RequestedLifetime:  3600,
@@ -48,7 +48,7 @@ func TestPipelineCapRegistryRejectsUnregistered(t *testing.T) {
 	cert := makeCertWithExt(t, oidAIC, aicVal)
 	chain := []*x509.Certificate{cert}
 
-	reg := &mockCapRegistry{known: map[string]bool{"varwof/core:cert:issue": true}}
+	reg := &mockCapRegistry{known: map[string]bool{"varwof/core-v1:cert:issue": true}}
 	r := RunAccessPipeline(chain, &PipelineConfig{
 		RequireAIC:         true,
 		CapabilityRegistry: reg,
@@ -66,7 +66,7 @@ func TestPipelineCapRegistryAllowsRegistered(t *testing.T) {
 	aic := AIC{
 		AgentId:      "agent-1",
 		PrincipalUid: PrincipalUid{KeyHash: make([]byte, 32), Version: 1, Realm: "varwof", Identifier: "user@varwof.com"},
-		Capabilities: []Capability{{SchemeId: "varwof/core", CapabilityId: "cert:issue"}},
+		Capabilities: []Capability{{SchemeId: "varwof/core-v1", CapabilityId: "cert:issue"}},
 		DelegationAuthorization: DelegationAuthorization{Reason: Reason{ReasonCode: "TEST", Description: "test"},
 			Nonce:              make([]byte, 32),
 			RequestedLifetime:  3600,
@@ -80,7 +80,7 @@ func TestPipelineCapRegistryAllowsRegistered(t *testing.T) {
 	cert := makeCertWithExt(t, oidAIC, aicVal)
 	chain := []*x509.Certificate{cert}
 
-	reg := &mockCapRegistry{known: map[string]bool{"varwof/core:cert:issue": true}}
+	reg := &mockCapRegistry{known: map[string]bool{"varwof/core-v1:cert:issue": true}}
 	r := RunAccessPipeline(chain, &PipelineConfig{
 		RequireAIC:         true,
 		CapabilityRegistry: reg,
@@ -95,7 +95,7 @@ func TestPipelineCapRegistryDisabled(t *testing.T) {
 	aic := AIC{
 		AgentId:      "agent-1",
 		PrincipalUid: PrincipalUid{KeyHash: make([]byte, 32), Version: 1, Realm: "varwof", Identifier: "user@varwof.com"},
-		Capabilities: []Capability{{SchemeId: "varwof/core", CapabilityId: "no:such"}},
+		Capabilities: []Capability{{SchemeId: "varwof/core-v1", CapabilityId: "no:such"}},
 		DelegationAuthorization: DelegationAuthorization{Reason: Reason{ReasonCode: "TEST", Description: "test"},
 			Nonce:              make([]byte, 32),
 			RequestedLifetime:  3600,
@@ -122,7 +122,7 @@ func TestGlobalCapRegistryFallback(t *testing.T) {
 	aic := AIC{
 		AgentId:      "agent-1",
 		PrincipalUid: PrincipalUid{KeyHash: make([]byte, 32), Version: 1, Realm: "varwof", Identifier: "user@varwof.com"},
-		Capabilities: []Capability{{SchemeId: "varwof/core", CapabilityId: "no:such"}},
+		Capabilities: []Capability{{SchemeId: "varwof/core-v1", CapabilityId: "no:such"}},
 		DelegationAuthorization: DelegationAuthorization{Reason: Reason{ReasonCode: "TEST", Description: "test"},
 			Nonce:              make([]byte, 32),
 			RequestedLifetime:  3600,
@@ -136,8 +136,8 @@ func TestGlobalCapRegistryFallback(t *testing.T) {
 	cert := makeCertWithExt(t, oidAIC, aicVal)
 	chain := []*x509.Certificate{cert}
 
-	// Set package-level registry (only recognizes varwof/core:cert:issue)
-	SetGlobalCapabilityRegistry(&mockCapRegistry{known: map[string]bool{"varwof/core:cert:issue": true}})
+	// Set package-level registry (only recognizes varwof/core-v1:cert:issue)
+	SetGlobalCapabilityRegistry(&mockCapRegistry{known: map[string]bool{"varwof/core-v1:cert:issue": true}})
 	defer SetGlobalCapabilityRegistry(nil) // Cleanup to avoid affecting other tests
 
 	// PipelineConfig has no explicit injection → falls back to global → rejects unregistered capabilities
@@ -151,7 +151,7 @@ func TestGlobalCapRegistryFallback(t *testing.T) {
 
 	// Explicitly inject a different registry → not affected by global (config takes priority)
 	// Note: nil interface cannot be explicitly expressed; use a different registry to override
-	SetGlobalCapabilityRegistry(&mockCapRegistry{known: map[string]bool{"varwof/core:no:such": true}})
+	SetGlobalCapabilityRegistry(&mockCapRegistry{known: map[string]bool{"varwof/core-v1:no:such": true}})
 	r2 := RunAccessPipeline(chain, &PipelineConfig{RequireAIC: true})
 	if !r2.Granted {
 		t.Errorf("expected allow with permissive global registry: %s", r2.DenyReason)

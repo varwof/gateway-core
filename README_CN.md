@@ -43,6 +43,21 @@ go get github.com/varwof/gateway-core@v0.1.0
 | 审计日志 | JSON Lines + Merkle 哈希链 |
 | 指标 | Prometheus Counter/Gauge/Histogram |
 | 统一准入管线 | CRL → OCSP → RBAC → AIC → 约束 → 插件 |
+| ACPs AAC Profile | 实验性（opt-in）：`acps` 包 + `RunAccessPipelineAAC`（AIC/AAC/AIP v0 切片） |
+
+## ACPs AAC Profile（实验性）
+
+ACPs v2.2.0 授权模型的 opt-in 强制执行层：
+
+- `acps` — 自包含包（AIC 语法 + CRC-16 校验码、委托 token 信任/边界规则、可信上下文提供者、
+  fail-closed PDP、AAC/AIP 错误码）。
+- `pipeline_aac.go` — `RunAccessPipelineAAC(chain, cfg, aac, req)`：未启用 AAC 时与既有
+  `RunAccessPipeline` 完全一致（默认行为不变）；启用后在业务处理前叠加身份绑定（AIP §6.0）、
+  可信上下文构建、audience/chain/replay 检查与 fail-closed PDP 裁决，并记录授权审计（AAC §13）。
+
+文档：`docs/acps/ACPs-v02.2-requirements.md`（需求基线）、
+`docs/acps/aac-to-gateway-core-mapping.md`（组件映射）、
+`docs/acps/conformance-matrix.md`（逐条一致性矩阵）。
 
 gateway-core 是三网关的**共享安全引擎层**。本项目是 [Open Invention Network](https://openinventionnetwork.com/) 成员。
 

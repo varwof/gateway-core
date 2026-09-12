@@ -203,6 +203,14 @@ func TestCheckAuthorizationConstraints_TimeWindow(t *testing.T) {
 		{"before start", `{"start":"09:00","end":"18:00"}`, time.Date(2026, 8, 7, 8, 59, 0, 0, time.UTC), true},
 		{"at start inclusive", `{"start":"09:00","end":"18:00"}`, time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC), false},
 		{"at end exclusive", `{"start":"09:00","end":"18:00"}`, time.Date(2026, 8, 7, 18, 0, 0, 0, time.UTC), true},
+		// Overnight single segment (start > end) is a host-level extension of the
+		// gateway-core constraint runtime: the scheme namespace here is "constraint"
+		// (not CLC core "varwof/constraint-v1"). The CLC core value grammar
+		// (rev CLC-1.3, §8.1) requires the array-of-segments form and forbids a single
+		// segment crossing midnight — there, `{"start":"22:00","end":"06:00"}` is
+		// `invalid_constraint` and must be split (`22:00→00:00` + `00:00→06:00`).
+		// The capability below is kept and documented as a scheme-level extension; it
+		// is NOT a CLC core conformance claim.
 		{"overnight in", `{"start":"22:00","end":"06:00"}`, time.Date(2026, 8, 7, 2, 0, 0, 0, time.UTC), false},
 		{"overnight out", `{"start":"22:00","end":"06:00"}`, time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC), true},
 		{"missing fields", `{"start":"09:00"}`, now, true},

@@ -320,7 +320,7 @@ func (r *TaskRegistry) Len() int
 |---|---|---|
 | `allowed-cidr` | 裸数组 `["10.0.0.0/8"]` 或对象 `{"cidrs":["10.0.0.0/8"]}` | 客户端 IP 必须落在允许网段内（需 ClientIP，为空则跳过） |
 | `max-concurrent` | 任意（占位） | 由网关连接跟踪器检查，评估阶段跳过 |
-| `time-window` | `{"start":"HH:MM","end":"HH:MM","tz":"Asia/Shanghai"}` | 评估时刻必须在窗口内，跨午夜窗口（start>end）支持；`tz` 为 IANA 时区名，空则按 UTC 评估；窗口含起点不含终点 |
+| `time-window` | `{"start":"HH:MM","end":"HH:MM","tz":"Asia/Shanghai"}` | 评估时刻必须在窗口内，跨午夜窗口（start>end）支持；`tz` 为 IANA 时区名，空则按 UTC 评估；窗口含起点不含终点。**边界说明（scheme 层扩展）**：对象形态 + start>end 跨夜单段为本网关运行时（`constraint`/`constraint-v1` scheme）的宿主级扩展，保留以兼容历史证书；CLC core（`varwof/constraint-v1:time:window`，rev CLC-1.3 §8.1）的值文法要求**段数组**形态且**禁止单段跨午夜**——core 写法下的 `{"start":"22:00","end":"06:00"}` 是 `invalid_constraint`，须拆成 `22:00→00:00` + `00:00→06:00` 两段。对 `varwof/constraint-v1` 输入请用拆段写法，本行不构成 core 一致性声明 |
 | `geo-fence` | 内联表 `{"resolver":"inline","regions":{"CN-SHA":["10.0.0.0/8"]}}` 或外部 `{"resolver":"ip2region","regions":["CN-SHA"]}` | 客户端 IP 解析出的地域标识必须命中允许集合（需 ClientIP，为空则跳过）。`inline` 为内置零依赖解析器（region→CIDR 内联表）；其他 resolver 需先 `RegisterGeoResolver` 注册，未注册时评估失败（拒绝而非放行） |
 
 未知约束类型在默认模式下忽略（向前兼容），由调用方记录 `unknown_constraint` 审计告警；注册对应执行器后即被识别执行。
