@@ -96,7 +96,9 @@ type AdmissionConfig struct {
 	// deployments requiring stricter time window defense (specification P1-B-13) can enable this.
 	CheckDAAge bool
 	// DAAgeMax is the DA timestamp freshness window (|now - timestamp| ≤ DAAgeMax).
-	// Only effective when CheckDAAge=true; <=0 uses DefaultDAAgeMax (30 seconds).
+	// Only effective when CheckDAAge=true; <=0 uses DefaultDAAgeMax (1 minute).
+	// Kept in step with core's serve.da_max_timestamp_skew so the same DA is not
+	// accepted by one enforcement point and rejected by the other.
 	DAAgeMax time.Duration
 	// CredentialBundle is the client-submitted credential bundle (P1-B-27/P1-B-29/P2-A-01).
 	// When RequireUserAuth is true and UserCert is nil, prioritizes the Principal certificate
@@ -106,8 +108,12 @@ type AdmissionConfig struct {
 }
 
 // DefaultDAAgeMax is the default value for the DelegationAuthorization.timestamp freshness window
-// (specification P1-B-13 / dev-docs/aic/06-delegation-auth.md §validation flow ①: |now - timestamp| ≤ 30s).
-const DefaultDAAgeMax = 30 * time.Second
+// (specification P1-B-13 / dev-docs/aic/06-delegation-auth.md §validation flow ①).
+// It mirrors core's DefaultDATimestampSkew: one minute, widened from the
+// specification's recommended 30s bound so an asynchronously approved DA can
+// still be redeemed.  The value equals the span in which a signed DA can be
+// replayed, so do not widen it further without a deliberate decision.
+const DefaultDAAgeMax = time.Minute
 
 // CheckDAFreshness validates that DelegationAuthorization.timestamp is within the freshness window.
 // When now is nil, uses time.Now(); when maxAge <= 0, uses DefaultDAAgeMax.
