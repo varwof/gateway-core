@@ -437,7 +437,7 @@ func geoResolve(resolver string, ip net.IP, regions json.RawMessage) (string, er
 		}
 		return "", fmt.Errorf("constraint geo-fence: client IP %q not in any allowed region", ip.String())
 	default:
-		fn, ok := geoResolvers[resolver]
+		fn, ok := lookupGeoResolver(resolver)
 		if !ok {
 			return "", fmt.Errorf("constraint geo-fence: resolver %q not registered", resolver)
 		}
@@ -459,7 +459,22 @@ func geoResolve(resolver string, ip net.IP, regions json.RawMessage) (string, er
 }
 
 // geoResolvers stores registered geographic resolvers (resolver name → resolution function).
-var geoResolvers = map[string]GeoResolver{}
+// Guarded by geoMu: RegisterGeoResolver is an extension point that deployments
+// may call while the gateway is already serving (plugin/config reload), and
+// checkGeoFence reads the map on every admission. Unsynchronised map access
+// across those two goroutines is a data race and can panic with "concurrent
+// map read and map write".
+var (
+	geoMu        sync.RWMutex
+	geoResolvers = map[string]GeoResolver{}
+)
+
+func lookupGeoResolver(name string) (GeoResolver, bool) {
+	geoMu.RLock()
+	defer geoMu.RUnlock()
+	fn, ok := geoResolvers[name]
+	return fn, ok
+}
 
 // RegisterGeoResolver registers a custom geographic resolver (extension point) for use
 // in the geo-fence resolver mode (e.g. third-party geographic databases like ip2region).
@@ -467,7 +482,9 @@ func RegisterGeoResolver(name string, fn GeoResolver) {
 	if name == "" || fn == nil {
 		return
 	}
+	geoMu.Lock()
 	geoResolvers[name] = fn
+	geoMu.Unlock()
 }
 
 // HardTimeoutMin is the minimum value for session:hard-timeout (seconds).

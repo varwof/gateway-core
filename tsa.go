@@ -327,7 +327,11 @@ func extractTSTInfoFromCMS(tstDER []byte) (*TSTInfo, []*x509.Certificate, *cmsSi
 	}
 
 	var eci cmsEncapContentInfo
-	if _, err := asn1.Unmarshal(eciRaw.Bytes, &eci); err != nil {
+	// Use FullBytes, not Bytes. RawValue.Bytes is the *contents* octets only;
+	// re-encoding them to recover a parseable element is not guaranteed to
+	// reproduce the original DER, and any deviation makes the parse fail (or,
+	// worse, succeed against different bytes than were signed).
+	if _, err := asn1.Unmarshal(eciRaw.FullBytes, &eci); err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("parse encapContentInfo inner: %w", err)
 	}
 	if !eci.ContentType.Equal(oidTSTInfo) {
@@ -340,6 +344,15 @@ func extractTSTInfoFromCMS(tstDER []byte) (*TSTInfo, []*x509.Certificate, *cmsSi
 	// both the TSTInfo parse and the message-digest cross-check use these bytes.
 	eContent := eci.Content.Bytes
 
+	// Some TSA implementations wrap the eContent octets in one more
+	// OCTET STRING layer. Unwrap a single level when it is present; the
+	// message-digest cross-check below is what ultimately decides whether the
+	// unwrapped bytes are the right ones, so this cannot launder a bad token.
+	var octetString asn1.RawValue
+	if _, err := asn1.Unmarshal(eContent, &octetString); err == nil && octetString.Tag == asn1.TagOctetString {
+		eContent = octetString.Bytes
+	}
+
 	var tstInfo TSTInfo
 	if _, err := asn1.Unmarshal(eContent, &tstInfo); err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("parse TSTInfo: %w", err)
@@ -347,9 +360,9 @@ func extractTSTInfoFromCMS(tstDER []byte) (*TSTInfo, []*x509.Certificate, *cmsSi
 
 	var certs []*x509.Certificate
 	if len(rest) > 0 && rest[0] == 0xA0 {
-		if _, err := asn1.Unmarshal(rest, &raw); err == nil {
+		if newRest, err := asn1.Unmarshal(rest, &raw); err == nil {
 			certs = parseCertificatesFromRaw(raw.Bytes)
-			rest = rest[len(rest)-len(rest):] // clear rest after consuming certs
+			rest = newRest // advance past the consumed certificates element
 		}
 	}
 
@@ -362,7 +375,11 @@ func extractTSTInfoFromCMS(tstDER []byte) (*TSTInfo, []*x509.Certificate, *cmsSi
 			if len(signerInfosRaw.Bytes) > 0 {
 				var siRaw asn1.RawValue
 				if _, err := asn1.Unmarshal(signerInfosRaw.Bytes, &siRaw); err == nil {
-					signerInfo = parseSignerInfo(siRaw.Bytes)
+					var perr error
+					signerInfo, perr = parseSignerInfo(siRaw.Bytes)
+					if perr != nil {
+						return nil, nil, nil, nil, fmt.Errorf("tsa: parse signerInfo: %w", perr)
+					}
 				}
 			}
 		}
@@ -468,24 +485,39 @@ func findTSACert(certs []*x509.Certificate) *x509.Certificate {
 //	  signatureAlgorithm AlgorithmIdentifier,
 //	  signature OCTET STRING
 //	}
-func parseSignerInfo(data []byte) *cmsSignerInfo {
+//
+// parseSignerInfo walks the SignerInfo SEQUENCE. Every Unmarshal error is
+// propagated: silently ignoring them yields a zero-valued cmsSignerInfo with
+// empty SignatureValue, which downstream turns into a confusing "signature
+// verification failed" instead of "this token is malformed" — and, worse, lets
+// a truncated token reach the verifier at all.
+func parseSignerInfo(data []byte) (*cmsSignerInfo, error) {
 	var rest = data
 	var raw asn1.RawValue
+	var err error
 
 	// version
-	rest, _ = asn1.Unmarshal(rest, &raw)
+	if rest, err = asn1.Unmarshal(rest, &raw); err != nil {
+		return nil, fmt.Errorf("tsa: unmarshal signer info: %w", err)
+	}
 	// sid (issuerAndSerialNumber or subjectKeyIdentifier)
-	rest, _ = asn1.Unmarshal(rest, &raw)
+	if rest, err = asn1.Unmarshal(rest, &raw); err != nil {
+		return nil, fmt.Errorf("tsa: unmarshal signer info: %w", err)
+	}
 	// digestAlgorithm
 	var digestAlgo asn1.RawValue
-	rest, _ = asn1.Unmarshal(rest, &digestAlgo)
+	if rest, err = asn1.Unmarshal(rest, &digestAlgo); err != nil {
+		return nil, fmt.Errorf("tsa: unmarshal signer info: %w", err)
+	}
 	digestOID := parseAlgorithmOID(digestAlgo.FullBytes)
 
 	// signedAttrs [0] IMPLICIT — optional
 	var signedAttrsRaw []byte
 	si := &cmsSignerInfo{}
 	if len(rest) > 0 && rest[0] == 0xa0 {
-		rest, _ = asn1.Unmarshal(rest, &raw)
+		if rest, err = asn1.Unmarshal(rest, &raw); err != nil {
+			return nil, fmt.Errorf("tsa: unmarshal signer info: %w", err)
+		}
 		signedAttrsRaw = raw.FullBytes
 		si.SignedAttrsRaw = signedAttrsRaw
 		// RFC 5652 §5.4: the signature is over the DER encoding of SignedAttributes
@@ -514,17 +546,20 @@ func parseSignerInfo(data []byte) *cmsSignerInfo {
 
 	// signatureAlgorithm
 	var sigAlgo asn1.RawValue
-	rest, _ = asn1.Unmarshal(rest, &sigAlgo)
+	if rest, err = asn1.Unmarshal(rest, &sigAlgo); err != nil {
+		return nil, fmt.Errorf("tsa: unmarshal signer info: %w", err)
+	}
 	sigOID := parseAlgorithmOID(sigAlgo.FullBytes)
-
 	// signature (OCTET STRING)
-	rest, _ = asn1.Unmarshal(rest, &raw)
+	if rest, err = asn1.Unmarshal(rest, &raw); err != nil {
+		return nil, fmt.Errorf("tsa: unmarshal signer info: %w", err)
+	}
 
 	si.DigestAlgorithm = digestOID
 	si.SignatureAlgo = sigOID
 	si.SignatureValue = raw.Bytes
 
-	return si
+	return si, nil
 }
 
 // parseAlgorithmOID extracts the OID from a DER-encoded AlgorithmIdentifier.

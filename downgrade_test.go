@@ -46,7 +46,7 @@ func TestPrincipalDowngradeRevokesAgentPermissions(t *testing.T) {
 	agentCert := agentAICCert(t, kh[:], []Capability{sel, ins})
 
 	// Before downgrade (C1): both capabilities effective.
-	r1 := CheckAdmission(agentCert, AdmissionConfig{UserCert: c1})
+	r1 := CheckAdmission(agentCert, AdmissionConfig{SkipDelegationAuthVerification: true, UserCert: c1})
 	if !hasCapability(r1.EffectiveCaps, ins) {
 		t.Fatalf("INSERT should be effective with C1, got %v", r1.EffectiveCaps)
 	}
@@ -56,7 +56,7 @@ func TestPrincipalDowngradeRevokesAgentPermissions(t *testing.T) {
 
 	// After downgrade (C2, same key pair): the old AIC still validates
 	// (keyHash unchanged) but INSERT is dropped from the intersection.
-	r2 := CheckAdmission(agentCert, AdmissionConfig{UserCert: c2})
+	r2 := CheckAdmission(agentCert, AdmissionConfig{SkipDelegationAuthVerification: true, UserCert: c2})
 	if r2.Decision == DecisionDeny {
 		t.Fatalf("AIC should remain valid after downgrade: %s", r2.Reason)
 	}

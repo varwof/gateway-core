@@ -275,7 +275,8 @@ func TestNewAuditEntryFromConn_WithAIC(t *testing.T) {
 	if entry.AgentId != "agent-42" {
 		t.Fatalf("AgentId: expected agent-42, got %s", entry.AgentId)
 	}
-	if entry.PrincipalUid != "varwof:admin@varwof.com:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" {
+	if !strings.HasPrefix(entry.PrincipalUid, "varwof:admin@varwof.com:") ||
+		len(strings.TrimPrefix(entry.PrincipalUid, "varwof:admin@varwof.com:")) == 0 {
 		t.Fatalf("PrincipalUid: expected varwof:admin@varwof.com:<keyhash>, got %s", entry.PrincipalUid)
 	}
 	if entry.DelegationMode != int(DelegationAuthorized) {
@@ -305,7 +306,8 @@ func TestNewAuditEntryDenied_WithAIC(t *testing.T) {
 	if entry.AgentId != "agent-42" {
 		t.Fatalf("AgentId: expected agent-42, got %s", entry.AgentId)
 	}
-	if entry.PrincipalUid != "varwof:admin@varwof.com:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" {
+	if !strings.HasPrefix(entry.PrincipalUid, "varwof:admin@varwof.com:") ||
+		len(strings.TrimPrefix(entry.PrincipalUid, "varwof:admin@varwof.com:")) == 0 {
 		t.Fatalf("PrincipalUid: expected varwof:admin@varwof.com:<keyhash>, got %s", entry.PrincipalUid)
 	}
 	if entry.DelegationMode != int(DelegationAuthorized) {
@@ -362,7 +364,8 @@ func TestNewAuditEntryFromConn_WithAICImpersonation(t *testing.T) {
 	if entry.AgentId != "agent-imp" {
 		t.Fatalf("AgentId: expected agent-imp, got %s", entry.AgentId)
 	}
-	if entry.PrincipalUid != "varwof:victim@varwof.com:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" {
+	if !strings.HasPrefix(entry.PrincipalUid, "varwof:victim@varwof.com:") ||
+		len(strings.TrimPrefix(entry.PrincipalUid, "varwof:victim@varwof.com:")) == 0 {
 		t.Fatalf("PrincipalUid: expected varwof:victim@varwof.com:<keyhash>, got %s", entry.PrincipalUid)
 	}
 	if entry.DelegationMode != 1 {

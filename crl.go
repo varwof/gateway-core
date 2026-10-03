@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -57,6 +58,15 @@ func NewCRLCache(caCert *x509.Certificate, url string, refreshSec int, translato
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		},
+		// Bound the dial and the handshake. Without these the client-side
+		// deadline is only the 30s http.Client.Timeout, so a black-holed CRL
+		// endpoint (packets dropped, TCP connect never completes) parks the
+		// refresh goroutine for the full timeout on every cycle.
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout: 5 * time.Second,
 	}
 	return &CRLCache{
 		caCert:     caCert,
