@@ -586,3 +586,25 @@ func TestLoadCAMultipleCerts(t *testing.T) {
 		t.Fatal("pool is nil")
 	}
 }
+
+// TestSkipDelegationAuthVerificationEnabled pins the default of the new
+// listener switch: nil TLSConfig, nil pointer and explicit false all verify
+// (the mandatory check runs); only an explicit true disables it.
+func TestSkipDelegationAuthVerificationEnabled(t *testing.T) {
+	tr, fa := true, false
+	cases := []struct {
+		name string
+		cfg  *TLSConfig
+		want bool
+	}{
+		{"nil config", nil, false},
+		{"field unset", &TLSConfig{}, false},
+		{"explicit false", &TLSConfig{SkipDelegationAuthVerification: &fa}, false},
+		{"explicit true", &TLSConfig{SkipDelegationAuthVerification: &tr}, true},
+	}
+	for _, tc := range cases {
+		if got := tc.cfg.SkipDelegationAuthVerificationEnabled(); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

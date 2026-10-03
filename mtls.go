@@ -145,6 +145,16 @@ type TLSConfig struct {
 	// RequireUserAuth specifies whether user authentication is required.
 	RequireUserAuth *bool `json:"require_user_auth,omitempty"`
 
+	// SkipDelegationAuthVerification disables the DelegationAuthorization
+	// signature verification mandated by the agent-certificate verification
+	// procedure (draft-wei-aic-identity-cert-02 step 4). It defaults to false:
+	// the check runs, and a delegated certificate whose principal certificate
+	// cannot be obtained fails closed. Set it only where the deployment has no
+	// way to obtain the principal certificate and accepts that the delegation
+	// is not cryptographically verified. Bearer AIC-JWT carriers do not need
+	// it — their delegation is checked by the JWT layer.
+	SkipDelegationAuthVerification *bool `json:"skip_delegation_auth_verification,omitempty"`
+
 	// RequireSPIFFE requires the client certificate to carry a SPIFFE ID
 	// SAN URI; connections without one are rejected.
 	RequireSPIFFE *bool `json:"require_spiffe,omitempty"`
@@ -190,6 +200,13 @@ func (t *TLSConfig) DisallowRepresentativeEnabled() bool {
 
 func (t *TLSConfig) RequireUserAuthEnabled() bool {
 	return t != nil && t.RequireUserAuth != nil && *t.RequireUserAuth
+}
+
+// SkipDelegationAuthVerificationEnabled reports whether the mandatory
+// DelegationAuthorization signature verification is disabled for this
+// listener. Default false (the check runs).
+func (t *TLSConfig) SkipDelegationAuthVerificationEnabled() bool {
+	return t != nil && t.SkipDelegationAuthVerification != nil && *t.SkipDelegationAuthVerification
 }
 
 func (t *TLSConfig) RequireSPIFFEEnabled() bool {
