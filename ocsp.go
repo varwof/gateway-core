@@ -288,6 +288,16 @@ func (c *OCSPCache) fallbackErr(cert *x509.Certificate, format string, args ...i
 	}
 	switch c.fallback {
 	case OCSPFallbackAllow:
+		// Fail-open is an auditable event: name the certificate that was
+		// admitted without revocation proof, on its own untranslatable line so
+		// it survives log shipping and locale changes. Without it, a deployment
+		// running OCSPFallbackAllow has no record of which certificates were
+		// admitted unproven.
+		label := "unknown-certificate"
+		if cert != nil {
+			label = cert.Subject.CommonName
+		}
+		fmt.Printf("[ERROR] OCSP fallback_allow: ALLOWING certificate %s without revocation proof: %s\n", label, msg)
 		fmt.Printf(t(c.lang, "ocsp.fallback_allow")+"\n", msg)
 		return nil
 	case OCSPFallbackCRL:

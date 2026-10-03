@@ -244,7 +244,7 @@ func TestVerifyTrustLayersParity(t *testing.T) {
 	cert, _ := x509.ParseCertificate(der)
 	chain := []*x509.Certificate{cert}
 
-	cfg := &PipelineConfig{RequireAIC: true}
+	cfg := &PipelineConfig{SkipDelegationAuthVerification: true, RequireAIC: true}
 	if r1 := RunAccessPipeline(chain, cfg); !r1.Granted {
 		t.Fatalf("RunAccessPipeline: %s", r1.DenyReason)
 	}

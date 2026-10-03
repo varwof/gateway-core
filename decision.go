@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/asn1"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -64,6 +65,14 @@ type AdmissionConfig struct {
 	RejectOverflow bool
 	// RequireUserAuth when set to true requires DelegationAuthorization signature verification in the AIC.
 	RequireUserAuth bool
+	// SkipDelegationAuthVerification disables the DelegationAuthorization
+	// signature verification that the agent-certificate verification
+	// procedure mandates unconditionally (draft Section 12 step 4). The zero
+	// value verifies; set it only where the deployment has no way to obtain
+	// the principal certificate, and expect delegated admissions to fail
+	// closed while it is false. RequireUserAuth is not this switch: it
+	// selects whether a principal certificate must be supplied.
+	SkipDelegationAuthVerification bool
 	// EnforceCapSizeConstraints when set to true validates Capability field lengths (schemeId 1-128, capabilityId 1-256, parameters 0-4096).
 	EnforceCapSizeConstraints bool
 	// NonceCache is used for DelegationAuthorization nonce replay protection.
@@ -190,14 +199,27 @@ func CheckAuthorizationConstraintsAt(constraints []Capability, clientIP, timeHHM
 }
 
 // checkConstraintsAt evaluates authorizationConstraints one by one through the constraint registry.
-// Only processes constraint / constraint-v1 scheme entries; other schemes are skipped as business capabilities.
+// Processes constraint / constraint-v1 scheme entries; a foreign schemeId is rejected (draft-wei-aic-identity-cert-02: the schemeId MUST be one of "varwof/constraint-v1").
 func checkConstraintsAt(constraints []Capability, clientIP string, now time.Time) error {
+	return checkConstraintsReg(globalConstraintRegistry, constraints, clientIP, now)
+}
+
+// checkConstraintsReg is the registry-parameterized form of checkConstraintsAt.
+// Taking the registry as a parameter keeps this file line-for-line comparable
+// with aic-verifier's decision.go, which lets an embedder substitute a
+// per-admission registry; see docs/parity-aic-verifier.md.
+func checkConstraintsReg(reg *ConstraintRegistry, constraints []Capability, clientIP string, now time.Time) error {
 	ctx := &ConstraintContext{ClientIP: clientIP, Now: now}
 	for _, c := range constraints {
 		if !isConstraintScheme(c.SchemeId) {
-			continue
+			// draft-wei-aic-identity-cert-02, authorizationConstraints:
+			// "The schemeId MUST be one of "varwof/constraint-v1"; any
+			// other schemeId MUST be rejected."  Unknown capabilityId stays
+			// ignored below (forward compatible); a foreign scheme is a
+			// malformed constraint, not an unrecognized type.
+			return fmt.Errorf("constraint schemeId %q: must be %q", c.SchemeId, "varwof/constraint-v1")
 		}
-		ev, err := globalConstraintRegistry.Find(c.CapabilityId)
+		ev, err := reg.Find(c.CapabilityId)
 		if err != nil {
 			// Unknown constraint type: ignored (forward compatible), caller logs audit warning.
 			// Will be recognized and executed after registering the corresponding executor.
@@ -212,19 +234,37 @@ func checkConstraintsAt(constraints []Capability, clientIP string, now time.Time
 
 // isKnownConstraintType determines whether a capabilityId is a registered constraint type.
 func isKnownConstraintType(capabilityId string) bool {
-	_, err := globalConstraintRegistry.Find(capabilityId)
+	return isKnownConstraintTypeReg(globalConstraintRegistry, capabilityId)
+}
+
+// isKnownConstraintTypeReg is the registry-parameterized form of isKnownConstraintType.
+func isKnownConstraintTypeReg(reg *ConstraintRegistry, capabilityId string) bool {
+	_, err := reg.Find(capabilityId)
 	return err == nil
+}
+
+// admissionConstraintRegistry returns the constraint registry an admission must
+// evaluate against. This module has no per-admission override, so it is always the
+// process-wide one; the indirection exists so the call sites below read the same
+// as aic-verifier's, which does allow AdmissionConfig.ConstraintRegistry.
+func admissionConstraintRegistry(cfg AdmissionConfig) *ConstraintRegistry {
+	return globalConstraintRegistry
 }
 
 // firstUnknownConstraint returns the first unregistered constraint entry from constraints
 // (scheme ∈ {constraint, constraint-v1} with unregistered capabilityId). Returns nil if none found.
 func firstUnknownConstraint(constraints []Capability) *Capability {
+	return firstUnknownConstraintReg(globalConstraintRegistry, constraints)
+}
+
+// firstUnknownConstraintReg is the registry-parameterized form of firstUnknownConstraint.
+func firstUnknownConstraintReg(reg *ConstraintRegistry, constraints []Capability) *Capability {
 	for i := range constraints {
 		c := &constraints[i]
 		if !isConstraintScheme(c.SchemeId) {
 			continue
 		}
-		if !isKnownConstraintType(c.CapabilityId) {
+		if !isKnownConstraintTypeReg(reg, c.CapabilityId) {
 			return c
 		}
 	}
@@ -398,12 +438,12 @@ func CheckAdmission(cert *x509.Certificate, cfg AdmissionConfig) AdmissionResult
 	// PA-level constraint checks (independent of AIC constraints; PA and AIC are checked separately at different layers)
 	// Direct authorization (no AIC): PA constraints are the only constraints; in delegation, PA and AIC constraints are checked independently
 	if cfg.EnforceConstraints && result.PrincipalAuthorization != nil && len(result.PrincipalAuthorization.AuthorizationConstraints) > 0 {
-		if err := CheckAuthorizationConstraints(result.PrincipalAuthorization.AuthorizationConstraints, cfg.ClientIP); err != nil {
+		if err := checkConstraintsReg(admissionConstraintRegistry(cfg), result.PrincipalAuthorization.AuthorizationConstraints, cfg.ClientIP, time.Now().In(time.UTC)); err != nil {
 			return AdmissionResult{Decision: DecisionDeny, Reason: fmt.Sprintf("pa constraint: %v", err)}
 		}
 		// Strict mode: unknown PA constraint type fail-closed (specification P1-B-23).
 		if cfg.StrictConstraints {
-			if u := firstUnknownConstraint(result.PrincipalAuthorization.AuthorizationConstraints); u != nil {
+			if u := firstUnknownConstraintReg(admissionConstraintRegistry(cfg), result.PrincipalAuthorization.AuthorizationConstraints); u != nil {
 				return AdmissionResult{
 					Decision: DecisionDeny,
 					Reason:   fmt.Sprintf("pa constraint: unknown constraint type %q (strict mode)", u.CapabilityId),
@@ -416,20 +456,20 @@ func CheckAdmission(cert *x509.Certificate, cfg AdmissionConfig) AdmissionResult
 	if aic != nil && cfg.EnforceConstraints && len(aic.AuthorizationConstraints) > 0 {
 		// Strict mode priority: unknown constraint type fail-closed (specification P1-B-23).
 		if cfg.StrictConstraints {
-			if u := firstUnknownConstraint(aic.AuthorizationConstraints); u != nil {
+			if u := firstUnknownConstraintReg(admissionConstraintRegistry(cfg), aic.AuthorizationConstraints); u != nil {
 				return AdmissionResult{
 					Decision: DecisionDeny,
 					Reason:   fmt.Sprintf("aic constraint: unknown constraint type %q (strict mode)", u.CapabilityId),
 				}
 			}
 		}
-		if err := CheckAuthorizationConstraints(aic.AuthorizationConstraints, cfg.ClientIP); err != nil {
+		if err := checkConstraintsReg(admissionConstraintRegistry(cfg), aic.AuthorizationConstraints, cfg.ClientIP, time.Now().In(time.UTC)); err != nil {
 			return AdmissionResult{Decision: DecisionDeny, Reason: err.Error()}
 		}
 		// Log unknown constraint type audit warning (forward compatible: does not block business)
 		if cfg.AuditLogger != nil {
 			for _, c := range aic.AuthorizationConstraints {
-				if !isKnownConstraintType(c.CapabilityId) {
+				if !isKnownConstraintTypeReg(admissionConstraintRegistry(cfg), c.CapabilityId) {
 					cfg.AuditLogger.Log(AuditEntry{
 						Action:   string(ActionUnknownConstraint),
 						TargetID: c.CapabilityId,
@@ -509,8 +549,11 @@ func CheckAdmission(cert *x509.Certificate, cfg AdmissionConfig) AdmissionResult
 		}
 	}
 
-	// Verify DelegationAuthorization signature
-	if aic != nil && cfg.RequireUserAuth {
+	// Verify DelegationAuthorization signature. Mandatory in the verification
+	// procedure (draft Section 12 step 4): the zero-value configuration
+	// verifies. RequireUserAuth only selects whether a principal certificate
+	// has to be supplied, so it no longer gates this step.
+	if aic != nil && !cfg.SkipDelegationAuthVerification {
 		if len(aic.DelegationAuthorization.SignatureValue) == 0 {
 			return AdmissionResult{Decision: DecisionDeny, Reason: "user_auth: signature required but empty"}
 		}
@@ -721,14 +764,27 @@ func VerifyDelegationAuth(aic *AIC, userCert *x509.Certificate, agentCert *x509.
 // explicit v1 encoding (Version INTEGER 1) and the legacy encoding (Version
 // INTEGER 0 emitted by pre-v2 signers), since the ASN.1 default:1 tag does not
 // collapse the two on marshal.
+// errDASignatureMismatch marks a DelegationAuthTBS whose signature did not
+// verify at the attempted DA version. It is the only failure that justifies
+// retrying a different version encoding; every other rejection (keyHash
+// cross-check, unsupported algorithm, malformed TBS) is definitive and must be
+// reported as-is.
+var errDASignatureMismatch = errors.New("delegation auth signature mismatch")
+
+// The legacy retry is gated on errDASignatureMismatch. Without that gate the
+// retry's own error replaces the real one: a version-1 DA with a valid
+// signature but a mismatched PrincipalUid.KeyHash fails the cross-check, falls
+// through to the version-0 attempt, and surfaces "signature verification
+// failed" instead of the keyHash mismatch that actually caused the denial.
 func verifyDelegationAuthTBS(aic *AIC, userCert *x509.Certificate, agentSPKI []byte, version int) error {
 	if version == pki.DAVersion2 {
 		return verifyDelegationAuthTBSAt(aic, userCert, agentSPKI, pki.DAVersion2)
 	}
-	if err := verifyDelegationAuthTBSAt(aic, userCert, agentSPKI, pki.DAVersion1); err == nil {
-		return nil
+	err := verifyDelegationAuthTBSAt(aic, userCert, agentSPKI, pki.DAVersion1)
+	if err != nil && errors.Is(err, errDASignatureMismatch) {
+		err = verifyDelegationAuthTBSAt(aic, userCert, agentSPKI, 0)
 	}
-	return verifyDelegationAuthTBSAt(aic, userCert, agentSPKI, 0)
+	return err
 }
 
 // verifyDelegationAuthTBSAt reconstructs the DelegationAuthTBS at the given DA
@@ -757,6 +813,14 @@ func verifyDelegationAuthTBSAt(aic *AIC, userCert *x509.Certificate, agentSPKI [
 		}
 		tbs.AgentKeyBinding = binding
 	}
+	// draft-wei-aic-identity-cert-02 verification step 4, version/validation
+	// matrix: v1 requires agentKeyBinding absent, v2 requires it present and
+	// valid, any other version is rejected, and the binding hashAlgo/length
+	// must be supported.  Validating the reconstructed TBS keeps that helper
+	// on the inbound path rather than test-only.
+	if err := pki.ValidateDelegationAuthTBSVersion(&tbs); err != nil {
+		return fmt.Errorf("verify_user_auth: %w", err)
+	}
 	tbsDER, err := asn1.Marshal(tbs)
 	if err != nil {
 		return fmt.Errorf("verify_user_auth: marshal tbs: %w", err)
@@ -769,17 +833,17 @@ func verifyDelegationAuthTBSAt(aic *AIC, userCert *x509.Certificate, agentSPKI [
 			return fmt.Errorf("verify_user_auth: unsupported ECDSA algorithm OID %s", ua.SignatureAlgorithm.Algorithm)
 		}
 		if !ecdsa.VerifyASN1(pub, digest[:], ua.SignatureValue) {
-			return fmt.Errorf("verify_user_auth: ecdsa signature verification failed")
+			return fmt.Errorf("verify_user_auth: ecdsa signature verification failed: %w", errDASignatureMismatch)
 		}
 	case *rsa.PublicKey:
 		switch {
 		case ua.SignatureAlgorithm.Algorithm.Equal(OIDSigRSAWithSHA256):
 			if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest[:], ua.SignatureValue); err != nil {
-				return fmt.Errorf("verify_user_auth: rsa-sha256 verification: %w", err)
+				return fmt.Errorf("verify_user_auth: rsa-sha256 verification: %w", errors.Join(err, errDASignatureMismatch))
 			}
 		case ua.SignatureAlgorithm.Algorithm.Equal(OIDSigRSAPSSWithSHA256):
 			if err := rsa.VerifyPSS(pub, crypto.SHA256, digest[:], ua.SignatureValue, nil); err != nil {
-				return fmt.Errorf("verify_user_auth: rsa-pss-sha256 verification: %w", err)
+				return fmt.Errorf("verify_user_auth: rsa-pss-sha256 verification: %w", errors.Join(err, errDASignatureMismatch))
 			}
 		default:
 			return fmt.Errorf("verify_user_auth: unsupported RSA algorithm OID %s", ua.SignatureAlgorithm.Algorithm)
@@ -819,7 +883,7 @@ type DelegationChainVerifier struct {
 	// MaxDepth is the maximum delegation depth allowed by the top Principal (including intermediate Agent B etc.).
 	MaxDepth int
 	// MaxChainLength is the hard upper limit to prevent certificate bomb attacks (P1-B-15):
-	// ≤0 means no extra limit (only constrained by MaxDepth).
+	// ≤0 uses DefaultMaxChainLength; the anti-bomb bound cannot be disabled.
 	MaxChainLength int
 }
 
@@ -846,8 +910,14 @@ func (v *DelegationChainVerifier) Verify(chain []*x509.Certificate, topPrincipal
 	if len(chain) > v.MaxDepth {
 		return fmt.Errorf("delegation_chain: chain depth %d exceeds maxDepth %d", len(chain), v.MaxDepth)
 	}
-	// Anti-loop + anti-certificate-bomb (P1-B-14/15).
-	if err := verifyChainStructure(chain, v.MaxChainLength); err != nil {
+	// Anti-loop + anti-certificate-bomb (P1-B-14/15).  MaxChainLength <= 0
+	// must not disable the limit: fall back to DefaultMaxChainLength, the
+	// same bound VerifyDelegationChainWithCaps applies.
+	maxChainLen := v.MaxChainLength
+	if maxChainLen <= 0 {
+		maxChainLen = DefaultMaxChainLength
+	}
+	if err := verifyChainStructure(chain, maxChainLen); err != nil {
 		return err
 	}
 
@@ -886,7 +956,7 @@ func (v *DelegationChainVerifier) Verify(chain []*x509.Certificate, topPrincipal
 // chain goes from top to bottom: chain[0]=top-level delegating Agent, chain[len-1]=bottom-level Agent.
 // maxDepth is set by the top Principal.
 func VerifyDelegationChain(chain []*x509.Certificate, topPrincipal *x509.Certificate, maxDepth int) error {
-	v := &DelegationChainVerifier{MaxDepth: maxDepth}
+	v := &DelegationChainVerifier{MaxDepth: maxDepth, MaxChainLength: DefaultMaxChainLength}
 	return v.Verify(chain, topPrincipal)
 }
 

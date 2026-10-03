@@ -11,8 +11,9 @@ import (
 // NonceCache provides a nonce replay protection cache (v1.4 §3.2).
 // Thread-safe with automatic cleanup of expired entries.
 type NonceCache struct {
-	m    sync.Map
-	done chan struct{}
+	m        sync.Map
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 // nonceEntry records the certificate scope and time of a nonce's first appearance.
@@ -43,9 +44,14 @@ func (nc *NonceCache) run() {
 	}
 }
 
-// Stop stops the background cleanup goroutine.
+// Stop stops the background cleanup goroutine. It is idempotent: calling it more
+// than once (e.g. Gateway.Close after an explicit Stop) does not panic on a
+// double channel close.
 func (nc *NonceCache) Stop() {
-	close(nc.done)
+	if nc == nil {
+		return
+	}
+	nc.stopOnce.Do(func() { close(nc.done) })
 }
 
 // CheckAndAdd checks whether a nonce has been replayed by a different certificate
@@ -53,6 +59,14 @@ func (nc *NonceCache) Stop() {
 // scope is the certificate identity (issuer/serial), used to distinguish "same cert
 // replaying the same nonce" (normal) from "DA evidence copied into a different cert"
 // (attack). Returns true to allow.
+//
+// Same-scope reuse is deliberately NOT bounded. The DA nonce lives inside the
+// certificate, so a long-lived agent re-presents the identical (scope, nonce)
+// pair on every request; capping reuses denies legitimate traffic from the 4th
+// request onward. Reuse within one scope carries no new authority — the same
+// key proved the same evidence — so the attack this cache exists to stop (DA
+// evidence copied into a *different* certificate) is the cross-scope case
+// below. Mirrored in varwof/aic-verifier nonce_cache.go; keep the two in step.
 func (nc *NonceCache) CheckAndAdd(scope string, nonce []byte) bool {
 	if len(nonce) == 0 {
 		return false

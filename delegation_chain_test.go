@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 )
@@ -345,5 +346,25 @@ func TestVerifyDelegationChainWithCaps_EscalationRejects(t *testing.T) {
 	principalCaps := []Capability{{SchemeId: "database", CapabilityId: "*"}}
 	if _, err := VerifyDelegationChainWithCaps(chain, principal, principalCaps, 2, 0); err == nil {
 		t.Fatal("escalation should be rejected by full verification")
+	}
+}
+
+// TestVerifyDelegationChain_DefaultAntiBombLimit: the 3-argument convenience
+// entry point must still enforce the P1-B-15 certificate-bomb bound. It used to
+// leave MaxChainLength at its zero value, which verifyChainStructure read as
+// "no limit", so a caller could verify an unbounded chain.
+func TestVerifyDelegationChain_DefaultAntiBombLimit(t *testing.T) {
+	principal, _ := makeChainCert(t, "principal")
+	chain := make([]*x509.Certificate, 0, DefaultMaxChainLength+1)
+	for i := 0; i < DefaultMaxChainLength+1; i++ {
+		c, _ := makeChainCert(t, "agent")
+		chain = append(chain, c)
+	}
+	err := VerifyDelegationChain(chain, principal, 100)
+	if err == nil {
+		t.Fatal("chain longer than DefaultMaxChainLength must be rejected")
+	}
+	if !strings.Contains(err.Error(), "exceeds limit") {
+		t.Fatalf("want anti-certificate-bomb refusal, got %v", err)
 	}
 }

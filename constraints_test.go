@@ -185,9 +185,16 @@ func TestCheckAuthorizationConstraints_CIDR(t *testing.T) {
 }
 
 func TestCheckAuthorizationConstraints_SchemeFilter(t *testing.T) {
+	// draft-wei-aic-identity-cert-02, authorizationConstraints: "The schemeId
+	// MUST be one of \"varwof/constraint-v1\"; any other schemeId MUST be
+	// rejected."  A foreign scheme on a constraint entry is refused rather
+	// than silently skipped.
 	err := CheckAuthorizationConstraints([]Capability{{SchemeId: "varwof/demo-mysql-v1", CapabilityId: "allowed-cidr", Parameters: []byte(`["10.0.0.0/8"]`)}}, "192.168.1.1")
-	if err != nil {
-		t.Fatalf("non-constraint scheme should be skipped, got %v", err)
+	if err == nil {
+		t.Fatal("non-constraint schemeId must be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be") {
+		t.Fatalf("rejection should name the required schemeId, got %v", err)
 	}
 }
 
