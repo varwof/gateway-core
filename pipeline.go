@@ -56,6 +56,11 @@ type PipelineConfig struct {
 	RejectOverflow bool
 	// RequireUserAuth requires user authentication.
 	RequireUserAuth bool
+	// SkipDelegationAuthVerification disables the DelegationAuthorization
+	// signature verification mandated by the agent-certificate verification
+	// procedure (draft Section 12 step 4). Zero value = verify; see
+	// AdmissionConfig.SkipDelegationAuthVerification.
+	SkipDelegationAuthVerification bool
 	// EnforceCapSizeConstraints enforces capability size constraints.
 	EnforceCapSizeConstraints bool
 	// EnforceSize32 enforces the 32-byte size constraint.
@@ -261,24 +266,25 @@ func RunAccessPipeline(chain []*x509.Certificate, cfg *PipelineConfig) *Pipeline
 	}
 
 	admit := CheckAdmission(clientCert, AdmissionConfig{
-		RequireAIC:                cfg.RequireAIC,
-		RequiredProtocol:          cfg.RequiredProtocol,
-		RequiredRuleId:            cfg.RequiredRuleId,
-		RequiredCapabilities:      cfg.RequiredCapabilities,
-		DisallowRepresentative:    cfg.DisallowRepresentative,
-		RequireUserPermission:     cfg.RequireUserPermission,
-		RejectOverflow:            cfg.RejectOverflow,
-		RequireUserAuth:           cfg.RequireUserAuth,
-		EnforceCapSizeConstraints: cfg.EnforceCapSizeConstraints,
-		EnforceSize32:             cfg.EnforceSize32,
-		NonceCache:                cfg.NonceCache,
-		UserCert:                  cfg.UserCert,
-		UserCertResolver:          cfg.UserCertResolver,
-		ClientIP:                  cfg.ClientIP,
-		EnforceConstraints:        cfg.EnforceConstraints,
-		StrictConstraints:         cfg.StrictConstraints,
-		AuditLogger:               cfg.AuditLogger,
-		CredentialBundle:          cfg.CredentialBundle,
+		RequireAIC:                     cfg.RequireAIC,
+		RequiredProtocol:               cfg.RequiredProtocol,
+		RequiredRuleId:                 cfg.RequiredRuleId,
+		RequiredCapabilities:           cfg.RequiredCapabilities,
+		DisallowRepresentative:         cfg.DisallowRepresentative,
+		RequireUserPermission:          cfg.RequireUserPermission,
+		RejectOverflow:                 cfg.RejectOverflow,
+		RequireUserAuth:                cfg.RequireUserAuth,
+		SkipDelegationAuthVerification: cfg.SkipDelegationAuthVerification,
+		EnforceCapSizeConstraints:      cfg.EnforceCapSizeConstraints,
+		EnforceSize32:                  cfg.EnforceSize32,
+		NonceCache:                     cfg.NonceCache,
+		UserCert:                       cfg.UserCert,
+		UserCertResolver:               cfg.UserCertResolver,
+		ClientIP:                       cfg.ClientIP,
+		EnforceConstraints:             cfg.EnforceConstraints,
+		StrictConstraints:              cfg.StrictConstraints,
+		AuditLogger:                    cfg.AuditLogger,
+		CredentialBundle:               cfg.CredentialBundle,
 	})
 	if admit.Decision != DecisionAllow {
 		return deny(admit.Reason)
@@ -377,7 +383,28 @@ func RunAccessPipeline(chain []*x509.Certificate, cfg *PipelineConfig) *Pipeline
 		for _, cap := range admit.EffectiveCaps {
 			p, err := pluginReg.Find(cap.SchemeId)
 			if err != nil {
-				// Scheme has no plugin = gateway does not serve this declaration → ignore
+				// A capability the current request requires, but whose scheme
+				// this gateway does not serve, MUST be refused: draft-wei-aic-
+				// identity-cert-02 - "When the capability required by the
+				// current request references an unknown scheme or an unknown
+				// capability, the request MUST be treated as Deny (fail-
+				// closed)."  Cert-carried capabilities that are not required
+				// stay ignored (same sentence, second half).
+				if requiredCapUnserved(cfg.RequiredCapabilities, cap) {
+					LogPluginDecision(cfg.AuditLogger, PluginAuditEntry{
+						Scheme:        cap.SchemeId,
+						CapabilityID:  cap.CapabilityId,
+						Decision:      "deny",
+						Reason:        fmt.Sprintf("required capability %q uses scheme %q, which this gateway does not serve", cap.CapabilityId, cap.SchemeId),
+						ClientCN:      clientCert.Subject.CommonName,
+						Principal:     admit.PrincipalUid,
+						Level:         "WARN",
+						DaHash:        daHash,
+						PolicyVersion: policyVersion,
+					})
+					return deny(fmt.Sprintf("required capability %q uses unserved scheme %q", cap.CapabilityId, cap.SchemeId))
+				}
+				// Scheme has no plugin = gateway does not serve this declaration -> ignore
 				// (spec: Ignore, not Deny)
 				LogPluginDecision(cfg.AuditLogger, PluginAuditEntry{
 					Scheme:        cap.SchemeId,
@@ -535,4 +562,19 @@ func CheckOperationCapability(reg *PluginRegistry, cap *Capability, ctx *PluginC
 		return &PluginResult{Decision: PluginDeny, Reason: fmt.Sprintf("scheme %q has no registered plugin: fail-closed", cap.SchemeId)}, nil
 	}
 	return p.Execute(cap, ctx)
+}
+
+// requiredCapUnserved reports whether any capability the current request
+// requires is matched by cap.  It mirrors aicCapabilityMatches so the
+// request-side capability identity is computed the same way in both places.
+func requiredCapUnserved(required []string, cap Capability) bool {
+	for _, req := range required {
+		if MatchCapability(req, cap.CapabilityId) {
+			return true
+		}
+		if cap.SchemeId != "" && MatchCapability(req, cap.SchemeId+":"+cap.CapabilityId) {
+			return true
+		}
+	}
+	return false
 }

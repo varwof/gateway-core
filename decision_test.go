@@ -103,7 +103,8 @@ func TestCheckAdmission_AICWithBasicInfo(t *testing.T) {
 	if result.Decision != DecisionAllow {
 		t.Fatalf("expected Allow, got %v", result.Decision)
 	}
-	if result.PrincipalUid != "varwof:admin@varwof.com:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" {
+	if !strings.HasPrefix(result.PrincipalUid, "varwof:admin@varwof.com:") ||
+		len(strings.TrimPrefix(result.PrincipalUid, "varwof:admin@varwof.com:")) == 0 {
 		t.Fatalf("expected varwof:admin@varwof.com:<keyhash>, got %s", result.PrincipalUid)
 	}
 }
@@ -275,7 +276,7 @@ func TestCheckAdmission_DisallowRepresentative(t *testing.T) {
 	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	cert, _ := x509.ParseCertificate(der)
 
-	result := CheckAdmission(cert, AdmissionConfig{DisallowRepresentative: true})
+	result := CheckAdmission(cert, AdmissionConfig{SkipDelegationAuthVerification: true, DisallowRepresentative: true})
 	if result.Decision != DecisionDeny {
 		t.Fatalf("expected Deny for representative, got %v", result.Decision)
 	}
@@ -311,7 +312,7 @@ func TestCheckAdmission_DisallowRepresentative(t *testing.T) {
 	der2, _ := x509.CreateCertificate(rand.Reader, tmpl2, tmpl2, &key.PublicKey, key)
 	cert2, _ := x509.ParseCertificate(der2)
 
-	result2 := CheckAdmission(cert2, AdmissionConfig{DisallowRepresentative: true})
+	result2 := CheckAdmission(cert2, AdmissionConfig{SkipDelegationAuthVerification: true, DisallowRepresentative: true})
 	if result2.Decision != DecisionAllow {
 		t.Fatalf("expected Allow for authorized mode, got %v", result2.Decision)
 	}
@@ -329,7 +330,7 @@ func TestCheckAdmission_DisallowRepresentative(t *testing.T) {
 	aicVal3, _ := asn1.Marshal(aic3)
 	cert3 := makeCertWithExt(t, oidAIC, aicVal3)
 
-	result3 := CheckAdmission(cert3, AdmissionConfig{DisallowRepresentative: true})
+	result3 := CheckAdmission(cert3, AdmissionConfig{SkipDelegationAuthVerification: true, DisallowRepresentative: true})
 	if result3.Decision != DecisionAllow {
 		t.Fatalf("expected Allow when no UP, got %v", result3.Decision)
 	}
@@ -348,7 +349,7 @@ func TestCheckAdmission_RequireUserPermission(t *testing.T) {
 	val, _ := asn1.Marshal(aic)
 	cert := makeCertWithExt(t, oidAIC, val)
 
-	result := CheckAdmission(cert, AdmissionConfig{RequireUserPermission: true})
+	result := CheckAdmission(cert, AdmissionConfig{SkipDelegationAuthVerification: true, RequireUserPermission: true})
 	if result.Decision != DecisionDeny {
 		t.Fatalf("expected Deny when RequireUserPermission without UP, got %v", result.Decision)
 	}
@@ -375,7 +376,7 @@ func TestCheckAdmission_RequireUserPermission(t *testing.T) {
 	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	cert2, _ := x509.ParseCertificate(der)
 
-	result2 := CheckAdmission(cert2, AdmissionConfig{RequireUserPermission: true})
+	result2 := CheckAdmission(cert2, AdmissionConfig{SkipDelegationAuthVerification: true, RequireUserPermission: true})
 	if result2.Decision != DecisionAllow {
 		t.Fatalf("expected Allow with UserPermission, got %v: %s", result2.Decision, result2.Reason)
 	}
@@ -467,7 +468,7 @@ func TestCheckAdmission_UserPermissionIntersection(t *testing.T) {
 	cert, _ := x509.ParseCertificate(der)
 
 	// Should allow with intersection
-	result := CheckAdmission(cert, AdmissionConfig{RequireAIC: true, RequireUserPermission: true})
+	result := CheckAdmission(cert, AdmissionConfig{SkipDelegationAuthVerification: true, RequireAIC: true, RequireUserPermission: true})
 	if result.Decision != DecisionAllow {
 		t.Fatalf("expected Allow with non-empty intersection, got %v: %s", result.Decision, result.Reason)
 	}
@@ -518,7 +519,7 @@ func TestCheckAdmission_RejectOverflow(t *testing.T) {
 	cert, _ := x509.ParseCertificate(der)
 
 	// Without RejectOverflow, intersection is non-empty so should pass
-	result := CheckAdmission(cert, AdmissionConfig{
+	result := CheckAdmission(cert, AdmissionConfig{SkipDelegationAuthVerification: true,
 		RequireAIC: true, RequireUserPermission: true,
 	})
 	if result.Decision != DecisionAllow {
@@ -526,7 +527,7 @@ func TestCheckAdmission_RejectOverflow(t *testing.T) {
 	}
 
 	// With RejectOverflow, aic has gateway:admin which UP doesn't authorize
-	result2 := CheckAdmission(cert, AdmissionConfig{
+	result2 := CheckAdmission(cert, AdmissionConfig{SkipDelegationAuthVerification: true,
 		RequireAIC: true, RequireUserPermission: true, RejectOverflow: true,
 	})
 	if result2.Decision != DecisionDeny {
@@ -563,7 +564,7 @@ func TestCheckAdmission_RejectOverflow(t *testing.T) {
 	der2, _ := x509.CreateCertificate(rand.Reader, tmpl2, tmpl2, &key.PublicKey, key)
 	cert2, _ := x509.ParseCertificate(der2)
 
-	result3 := CheckAdmission(cert2, AdmissionConfig{
+	result3 := CheckAdmission(cert2, AdmissionConfig{SkipDelegationAuthVerification: true,
 		RequireAIC: true, RequireUserPermission: true, RejectOverflow: true,
 	})
 	if result3.Decision != DecisionAllow {
@@ -608,7 +609,7 @@ func TestCheckAdmission_UserPermissionNoIntersection(t *testing.T) {
 	cert, _ := x509.ParseCertificate(der)
 
 	// Should deny with empty intersection
-	result := CheckAdmission(cert, AdmissionConfig{RequireAIC: true, RequireUserPermission: true})
+	result := CheckAdmission(cert, AdmissionConfig{SkipDelegationAuthVerification: true, RequireAIC: true, RequireUserPermission: true})
 	if result.Decision != DecisionDeny {
 		t.Fatalf("expected Deny for empty intersection, got %v", result.Decision)
 	}
@@ -1019,38 +1020,56 @@ func TestVerifyDelegationAuth_SPKIHashMismatch(t *testing.T) {
 		t.Fatal("key is not *ecdsa.PrivateKey")
 	}
 	nonce := make([]byte, 32)
-	tbs := DelegationAuthTBS{
-		Reason:    Reason{ReasonCode: "TEST", Description: "test"},
-		AgentId:   "test-agent",
-		Timestamp: time.Now(),
-		Nonce:     nonce,
-	}
-	tbsDER, err := asn1.Marshal(tbs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest := sha256.Sum256(tbsDER)
-	sig, err := ecdsa.SignASN1(rand.Reader, ecKey, digest[:])
-	if err != nil {
-		t.Fatal(err)
-	}
 	wrongHash := sha256.Sum256([]byte("wrong-key"))
+	ts := time.Now()
 	aic := AIC{
+		Version: 1,
 		AgentId: "test-agent",
 		PrincipalUid: PrincipalUid{
 			KeyHash: wrongHash[:],
 		},
 		DelegationAuthorization: DelegationAuthorization{Reason: Reason{ReasonCode: "TEST", Description: "test"},
-			Timestamp:          time.Now(),
+			Timestamp:          ts,
 			Nonce:              nonce,
 			SignatureAlgorithm: AlgorithmIdentifier{Algorithm: OIDSigECDSAWithSHA256},
-			SignatureValue:     sig,
 		},
 	}
+	// Sign the TBS exactly as the verifier reconstructs it, so the signature
+	// really is valid and the only thing left to fail is the keyHash
+	// cross-check. (The previous fixture signed a TBS that omitted
+	// RequestedLifetime, so the signature never verified and the test passed
+	// on the wrong error.)
+	ua := aic.DelegationAuthorization
+	tbsDER, err := asn1.Marshal(DelegationAuthTBS{
+		Version:           aic.Version,
+		AgentId:           aic.AgentId,
+		PrincipalUid:      aic.PrincipalUid,
+		Reason:            ua.Reason,
+		DelegationMode:    aic.DelegationMode,
+		RequestedLifetime: ua.RequestedLifetime,
+		Timestamp:         ua.Timestamp,
+		Nonce:             ua.Nonce,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(tbsDER)
+	aic.DelegationAuthorization.SignatureValue, err = ecdsa.SignASN1(rand.Reader, ecKey, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	// Signature is correct, but PrincipalUid.KeyHash does not match userCert's SPKI -> should deny
 	err = VerifyDelegationAuth(&aic, userCert, nil)
 	if err == nil {
 		t.Fatal("expected SPKI hash mismatch error")
+	}
+	// The version-1 -> legacy-version-0 fallback must not mask the real cause.
+	// A keyHash rejection is definitive, so retrying the legacy encoding and
+	// returning *its* error would report "signature verification failed" for a
+	// token whose signature was in fact valid.
+	if !strings.Contains(err.Error(), "SPKI hash mismatch") {
+		t.Fatalf("keyHash mismatch reported as %q, want the keyHash cross-check failure", err)
 	}
 }
 
@@ -1496,7 +1515,7 @@ func TestCheckAdmission_CapSizeConstraint_Pass(t *testing.T) {
 	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	cert, _ := x509.ParseCertificate(der)
 
-	result := CheckAdmission(cert, AdmissionConfig{
+	result := CheckAdmission(cert, AdmissionConfig{SkipDelegationAuthVerification: true,
 		EnforceCapSizeConstraints: true,
 	})
 	if result.Decision != DecisionAllow {
@@ -1567,7 +1586,7 @@ func TestCheckAdmission_Size32_NonceOK(t *testing.T) {
 	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	cert, _ := x509.ParseCertificate(der)
 
-	result := CheckAdmission(cert, AdmissionConfig{EnforceSize32: true})
+	result := CheckAdmission(cert, AdmissionConfig{SkipDelegationAuthVerification: true, EnforceSize32: true})
 	if result.Decision != DecisionAllow {
 		t.Fatalf("expected Allow, got %v: %s", result.Decision, result.Reason)
 	}
@@ -1665,7 +1684,7 @@ func TestCheckAdmission_AuthorizedModeNoIntersection(t *testing.T) {
 	cert, _ := x509.ParseCertificate(der)
 
 	// Even with RejectOverflow=true, authorized mode does not deny (no runtime upper bound check)
-	result := CheckAdmission(cert, AdmissionConfig{
+	result := CheckAdmission(cert, AdmissionConfig{SkipDelegationAuthVerification: true,
 		RequireAIC: true, RequireUserPermission: true, RejectOverflow: true,
 	})
 	if result.Decision != DecisionAllow {

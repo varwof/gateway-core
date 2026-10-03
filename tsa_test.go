@@ -295,7 +295,10 @@ func TestParseSignerInfoExtractsAttrs(t *testing.T) {
 		t.Fatalf("expected SEQUENCE, got tag %d", outer.Tag)
 	}
 
-	parsed := parseSignerInfo(outer.Bytes)
+	parsed, err := parseSignerInfo(outer.Bytes)
+	if err != nil {
+		t.Fatalf("parseSignerInfo: %v", err)
+	}
 	if parsed == nil {
 		t.Fatal("parseSignerInfo returned nil")
 	}

@@ -151,7 +151,9 @@ func TestPipelineRequireAICWithAICPresent(t *testing.T) {
 	if r.AgentId != "agent-1" {
 		t.Errorf("AgentId: expected agent-1, got %s", r.AgentId)
 	}
-	if r.Principal != "varwof:user@varwof.com:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" {
+	// The self-authorized fixture binds PrincipalUid.KeyHash to the leaf SPKI
+	// hash, so the rendered principal carries that hash rather than zeros.
+	if !strings.HasPrefix(r.Principal, "varwof:user@varwof.com:") || len(strings.TrimPrefix(r.Principal, "varwof:user@varwof.com:")) == 0 {
 		t.Errorf("Principal: expected varwof:user@varwof.com:<keyhash>, got %s", r.Principal)
 	}
 }
@@ -419,7 +421,7 @@ func TestPipelineDisallowRepresentative(t *testing.T) {
 	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	cert, _ := x509.ParseCertificate(der)
 	chain := []*x509.Certificate{cert}
-	r := RunAccessPipeline(chain, &PipelineConfig{
+	r := RunAccessPipeline(chain, &PipelineConfig{SkipDelegationAuthVerification: true,
 		RequireAIC:             true,
 		DisallowRepresentative: true,
 	})
@@ -454,7 +456,7 @@ func TestPipelineDisallowRepresentative(t *testing.T) {
 	der2, _ := x509.CreateCertificate(rand.Reader, tmpl2, tmpl2, &key.PublicKey, key)
 	cert2, _ := x509.ParseCertificate(der2)
 	chain2 := []*x509.Certificate{cert2}
-	r2 := RunAccessPipeline(chain2, &PipelineConfig{
+	r2 := RunAccessPipeline(chain2, &PipelineConfig{SkipDelegationAuthVerification: true,
 		RequireAIC:             true,
 		DisallowRepresentative: true,
 	})
@@ -596,7 +598,7 @@ func TestPipelineParameterBoundary(t *testing.T) {
 
 	t.Run("declared within boundary", func(t *testing.T) {
 		cert := makeCert(t, []Capability{{SchemeId: "report", CapabilityId: "list", Parameters: []byte(`{"max_rows": 100}`)}}, []Capability{paGrant}, 1)
-		r := RunAccessPipeline([]*x509.Certificate{cert}, &PipelineConfig{
+		r := RunAccessPipeline([]*x509.Certificate{cert}, &PipelineConfig{SkipDelegationAuthVerification: true,
 			RequireAIC:          true,
 			ParameterValidators: reg,
 		})
@@ -607,7 +609,7 @@ func TestPipelineParameterBoundary(t *testing.T) {
 
 	t.Run("declared exceeds boundary", func(t *testing.T) {
 		cert := makeCert(t, []Capability{{SchemeId: "report", CapabilityId: "list", Parameters: []byte(`{"max_rows": 5000}`)}}, []Capability{paGrant}, 2)
-		r := RunAccessPipeline([]*x509.Certificate{cert}, &PipelineConfig{
+		r := RunAccessPipeline([]*x509.Certificate{cert}, &PipelineConfig{SkipDelegationAuthVerification: true,
 			RequireAIC:          true,
 			ParameterValidators: reg,
 		})
@@ -621,7 +623,7 @@ func TestPipelineParameterBoundary(t *testing.T) {
 
 	t.Run("no validator registry → pass", func(t *testing.T) {
 		cert := makeCert(t, []Capability{{SchemeId: "report", CapabilityId: "list", Parameters: []byte(`{"max_rows": 5000}`)}}, []Capability{paGrant}, 3)
-		r := RunAccessPipeline([]*x509.Certificate{cert}, &PipelineConfig{
+		r := RunAccessPipeline([]*x509.Certificate{cert}, &PipelineConfig{SkipDelegationAuthVerification: true,
 			RequireAIC: true,
 		})
 		if !r.Granted {
@@ -981,7 +983,7 @@ func TestPipelineOfflineLifetime(t *testing.T) {
 
 	t.Run("remaining exceeds limit rejected", func(t *testing.T) {
 		cert := makeAICCert(5 * time.Hour)
-		r := RunAccessPipeline([]*x509.Certificate{cert}, &PipelineConfig{
+		r := RunAccessPipeline([]*x509.Certificate{cert}, &PipelineConfig{SkipDelegationAuthVerification: true,
 			RequireAIC:             true,
 			OfflineMaxCertLifetime: offline,
 		})
@@ -995,7 +997,7 @@ func TestPipelineOfflineLifetime(t *testing.T) {
 
 	t.Run("within limit allowed", func(t *testing.T) {
 		cert := makeAICCert(30 * time.Minute)
-		r := RunAccessPipeline([]*x509.Certificate{cert}, &PipelineConfig{
+		r := RunAccessPipeline([]*x509.Certificate{cert}, &PipelineConfig{SkipDelegationAuthVerification: true,
 			RequireAIC:             true,
 			OfflineMaxCertLifetime: offline,
 		})
@@ -1006,7 +1008,7 @@ func TestPipelineOfflineLifetime(t *testing.T) {
 
 	t.Run("disabled allows any", func(t *testing.T) {
 		cert := makeAICCert(24 * time.Hour)
-		r := RunAccessPipeline([]*x509.Certificate{cert}, &PipelineConfig{
+		r := RunAccessPipeline([]*x509.Certificate{cert}, &PipelineConfig{SkipDelegationAuthVerification: true,
 			RequireAIC: true,
 		})
 		if !r.Granted {
@@ -1027,5 +1029,33 @@ func TestOfflineLifetimeFor(t *testing.T) {
 		if got := OfflineLifetimeFor(fb); got != 0 {
 			t.Fatalf("%q → want 0, got %s", fb, got)
 		}
+	}
+}
+
+// TestPipelineRequiredCapabilityUnknownSchemeDenied pins draft-wei-aic-identity
+// -cert-02: "When the capability required by the current request references an
+// unknown scheme or an unknown capability, the request MUST be treated as Deny
+// (fail-closed)." A capability declared by the certificate but not required by
+// the request stays ignored, per the same sentence's second half.
+func TestPipelineRequiredCapabilityUnknownSchemeDenied(t *testing.T) {
+	cert := makeAICCertWithCaps(t, []Capability{{SchemeId: "std/database-v1", CapabilityId: "query:SELECT"}})
+	emptyReg := NewPluginRegistry()
+
+	r := RunAccessPipeline([]*x509.Certificate{cert}, &PipelineConfig{
+		RequiredCapabilities:     []string{"std/database-v1:query:SELECT"},
+		CapabilityPluginRegistry: emptyReg,
+	})
+	if r.Granted {
+		t.Fatalf("required capability with unserved scheme was admitted")
+	}
+	if !strings.Contains(r.DenyReason, "unserved scheme") {
+		t.Fatalf("deny reason = %q, want an unserved-scheme refusal", r.DenyReason)
+	}
+
+	r2 := RunAccessPipeline([]*x509.Certificate{cert}, &PipelineConfig{
+		CapabilityPluginRegistry: emptyReg,
+	})
+	if !r2.Granted {
+		t.Fatalf("irrelevant unserved declaration must be ignored, got %s", r2.DenyReason)
 	}
 }
